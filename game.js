@@ -48,7 +48,7 @@ const input = {
   right: false,
 };
 
-const runState = { status: 'playing', timer: 0 }; // 'playing' | 'won' | 'lost'
+const runState = { status: 'playing', timer: 0, elapsed: 0 }; // 'playing' | 'won' | 'lost'; elapsed = play time this run, frozen on win
 
 let floorY = 0;
 let elevatedY = 0;
@@ -69,34 +69,64 @@ function resizeCanvas() {
   elevatedY = floorY - 260;
 }
 
+const STEP_HEIGHT = 90; // px above the ground a normal bounce (~186px apex) comfortably clears
+// a normal bounce's max apex from ground level is ~186.7px, so 200 is unreachable in a single
+// bounce no matter the timing -- the island can only be reached by bouncing again from the step,
+// never directly from the ground, which is what actually makes this a two-tier staircase.
+const ISLAND_HEIGHT = 200; // px above the ground -- reached via the step, not directly
+
 function buildLevel() {
   // world-space layout. sections: rubber ledge -> cloud glide -> iron tunnel -> ice hazard -> goal.
+  // the ground path is one continuous, unbroken route -- nothing about picking up a trait
+  // interrupts forward progress. each trait sits two tiers above that path: a low step first,
+  // then the trait island above the step. holding right at a steady pace carries the ball's
+  // bounce apex past each tier before it's descended into pickup range, so neither the step nor
+  // the island is ever touched by accident -- reaching the island takes two deliberate detours in
+  // a row (ease off early to catch the step, then again to climb from the step to the island).
   platforms = [
-    { xStart: 0, xEnd: 500, y: floorY }, // start — wide enough that the boosted bounce still lands before the edge
-    { xStart: 900, xEnd: 1300, y: elevatedY }, // ledge reached via rubber boost
-    { xStart: 1800, xEnd: 2050, y: elevatedY }, // landing after the wide glide
-    { xStart: 2050, xEnd: 2390, y: elevatedY, ceiling: true }, // low tunnel: only iron's tiny bounce fits
-    // after the tunnel: long enough that the first ice-boosted bounce (up to ~840px) lands
-    // back on solid ground instead of landing mid-pit -- the *next* bounce launches right at
-    // the edge with vx already maxed, which is what actually needs to clear the pit.
-    { xStart: 2390, xEnd: 3490, y: elevatedY }, // after tunnel + ice runway
-    // no platform from 3490 to 3890: a real pit, spikes at the bottom (see pitSpikes).
+    { xStart: 0, xEnd: 850, y: floorY }, // start
+    { xStart: 120, xEnd: 200, y: floorY - STEP_HEIGHT }, // step up from the ground
+    { xStart: 260, xEnd: 340, y: floorY - ISLAND_HEIGHT, trait: 'rubber', used: false }, // correct island, reached from the step
+    { xStart: 400, xEnd: 480, y: floorY - ISLAND_HEIGHT, trait: 'iron', used: false }, // decoy: kills the bounce needed to reach the ledge
+    // a two-tier launch falls for longer than a ground launch (it has extra height to lose before
+    // reaching the ground below), so it covers more distance before its first landing -- but the
+    // ground can't run too far past that landing spot either, since rubber's boost then has to
+    // launch from there and still clear the gap ahead in one shot.
+
+    { xStart: 1250, xEnd: 2250, y: elevatedY, resetTrait: true, exceptTrait: 'cloud' }, // ledge reached via rubber boost
+    { xStart: 1360, xEnd: 1440, y: elevatedY - STEP_HEIGHT }, // step
+    { xStart: 1510, xEnd: 1590, y: elevatedY - ISLAND_HEIGHT, trait: 'cloud', used: false }, // correct island
+    { xStart: 1650, xEnd: 1730, y: elevatedY - ISLAND_HEIGHT, trait: 'rubber', used: false }, // decoy: extra height, not the glide distance the gap needs
+
+    { xStart: 2750, xEnd: 3750, y: elevatedY, resetTrait: true, exceptTrait: 'iron' }, // landing after the wide glide -- also clears leftover cloud float
+    { xStart: 2860, xEnd: 2940, y: elevatedY - STEP_HEIGHT }, // step
+    { xStart: 3010, xEnd: 3090, y: elevatedY - ISLAND_HEIGHT, trait: 'iron', used: false }, // correct island
+    { xStart: 3150, xEnd: 3230, y: elevatedY - ISLAND_HEIGHT, trait: 'cloud', used: false }, // decoy: normal-height bounce still hits the low ceiling
+    // the island sits above the ceiling's own height threshold, so the ball needs real room
+    // after it to actually fall low enough (not just return to island height) before the low
+    // ceiling begins -- same reasoning as the rubber ground above, extra margin here too.
+
+    { xStart: 3750, xEnd: 4090, y: elevatedY, ceiling: true }, // low tunnel: only iron's tiny bounce fits
+
+    { xStart: 4090, xEnd: 5400, y: elevatedY, resetTrait: true, exceptTrait: 'ice' }, // after tunnel + ice runway -- also clears leftover heavy iron
+    { xStart: 4200, xEnd: 4280, y: elevatedY - STEP_HEIGHT }, // step
+    { xStart: 4350, xEnd: 4430, y: elevatedY - ISLAND_HEIGHT, trait: 'ice', used: false }, // correct island
+    { xStart: 4490, xEnd: 4570, y: elevatedY - ISLAND_HEIGHT, trait: 'rubber', used: false }, // decoy: more height, not the speed needed to clear the pit
+    // no platform from 5400 to 5800: a real pit, spikes at the bottom (see pitSpikes).
     // normal/other bounces (~383px) fall short and drop in; only ice's speed clears it.
-    { xStart: 3890, xEnd: 4890, y: elevatedY, goal: true }, // goal — wide, since ice's speed can carry the landing far past the pit
+    { xStart: 5800, xEnd: 6800, y: elevatedY, goal: true }, // goal — wide, since ice's speed can carry the landing far past the pit
   ];
 
   ceilings = platforms
     .filter((p) => p.ceiling)
     .map((p) => ({ xStart: p.xStart, xEnd: p.xEnd, y: p.y - 100 }));
 
-  pitSpikes = { xStart: 3490, xEnd: 3890, y: elevatedY + 140 };
+  pitSpikes = { xStart: 5400, xEnd: 5800, y: elevatedY + 140 };
 
-  triggers = [
-    { xStart: 100, xEnd: 180, y: floorY, trait: 'rubber', used: false },
-    { xStart: 950, xEnd: 1030, y: elevatedY, trait: 'cloud', used: false },
-    { xStart: 1850, xEnd: 1930, y: elevatedY, trait: 'iron', used: false },
-    { xStart: 2440, xEnd: 2520, y: elevatedY, trait: 'ice', used: false },
-  ];
+  // trait is shown before touching (color + label) on the island only -- steps are plain, unmarked
+  // stairs. the trait is granted only on an actual landing on the island (see update()), not by
+  // flying near it, so grabbing it always means physically climbing both tiers above the path.
+  triggers = platforms.filter((p) => p.trait);
 
   const last = platforms[platforms.length - 1];
   levelWidth = last.xEnd + 200;
@@ -115,6 +145,7 @@ function resetBall() {
   toasts = [];
   runState.status = 'playing';
   runState.timer = 0;
+  runState.elapsed = 0;
   cameraX = 0;
 }
 
@@ -154,28 +185,17 @@ function pushToast(text) {
   toasts.push({ text, life: 3.5 });
 }
 
-function checkTriggerPickup() {
-  if (ball.pendingTrait) return; // already carrying an unused trait
-  for (const trigger of triggers) {
-    if (trigger.used) continue;
-    const inX = ball.x + BALL_RADIUS >= trigger.xStart && ball.x - BALL_RADIUS <= trigger.xEnd;
-    const inY = ball.y >= trigger.y - 220 && ball.y <= trigger.y + BALL_RADIUS;
-    if (inX && inY) {
-      trigger.used = true;
-      ball.pendingTrait = trigger.trait;
-      pushToast(`${TRAIT_LABELS[trigger.trait]} 획득 — Space로 사용`);
-      break;
-    }
-  }
-}
-
-function getSupportPlatform(x) {
-  // topmost platform under this x. direction is handled by the vy>=0 guard at the call site,
-  // not here -- filtering on the ball's current y would let a fast fall (e.g. iron's gravity)
-  // tunnel through a platform whenever one frame's step lands past its y.
+function getSupportPlatform(x, prevBottom, nextBottom) {
+  // topmost platform under this x that the ball is actually crossing into this frame (prevBottom
+  // was still above it, nextBottom has reached or passed it). picking the topmost platform at this
+  // x regardless of height -- as a plain overlap test -- would make a two-tier island's platform
+  // permanently shadow the ground below it: a ball passing under the island at ground height would
+  // never be offered the ground as a candidate, and would fall straight through with no landing at
+  // all. requiring an actual crossing lets a lower, unrelated platform still catch the ball.
   let best = null;
   for (const p of platforms) {
     if (x < p.xStart || x > p.xEnd) continue;
+    if (prevBottom > p.y || nextBottom < p.y) continue;
     if (!best || p.y < best.y) best = p;
   }
   return best;
@@ -200,6 +220,8 @@ function update(dt) {
     if (runState.timer <= 0) resetBall();
     return;
   }
+
+  runState.elapsed += dt;
 
   if (ball.activeTrait === 'ice') {
     const target = (input.right ? ICE_MOVE_SPEED : 0) - (input.left ? ICE_MOVE_SPEED : 0);
@@ -235,16 +257,30 @@ function update(dt) {
     }
   }
 
-  checkTriggerPickup();
-
   if (pitSpikes && ball.x >= pitSpikes.xStart && ball.x <= pitSpikes.xEnd && ball.y + BALL_RADIUS >= pitSpikes.y) {
     failRun('가시밭에 떨어졌다 — 얼음으로 건너뛰어야 한다');
     return;
   }
 
-  const support = getSupportPlatform(ball.x);
-  if (support && ball.vy >= 0 && prevBottom <= support.y && ball.y + BALL_RADIUS >= support.y) {
+  const support = ball.vy >= 0 ? getSupportPlatform(ball.x, prevBottom, ball.y + BALL_RADIUS) : null;
+  if (support) {
     ball.y = support.y - BALL_RADIUS;
+
+    // trait is only granted by actually landing on its island -- flying near it at height doesn't
+    // count, so picking one up always means a deliberate detour off the main path, not a flyby.
+    // touching it overwrites whatever was already pending, same as before.
+    if (support.trait && !support.used) {
+      support.used = true;
+      ball.pendingTrait = support.trait;
+      pushToast(`${TRAIT_LABELS[support.trait]} 획득 — Space로 사용`);
+    }
+
+    // landing zones right after a hazard neutralize any leftover duration-based effect (cloud/iron
+    // stay active across several bounces) -- otherwise a stray float/heavy landing here would carry
+    // into the next island's expected normal-bounce height as an unpredictably huge or short bounce.
+    // exceptTrait guards this section's own trait: the ball also lands on this same ground after
+    // visiting this section's own island, and that one must survive to actually get used.
+    if (support.resetTrait && ball.activeTrait && ball.activeTrait !== support.exceptTrait) clearActiveTrait();
 
     if (support.goal) {
       winRun();
@@ -304,8 +340,28 @@ function render() {
   if (pitSpikes) drawSpikes(pitSpikes.xStart, pitSpikes.xEnd, pitSpikes.y, -1);
 
   for (const c of ceilings) {
-    ctx.fillStyle = '#6b6b6b';
-    ctx.fillRect(c.xStart, c.y - 6, c.xEnd - c.xStart, 6);
+    // a thick solid slab reaching off the top of the screen, not a thin line -- reads unmistakably
+    // as a real ceiling you cannot fly up past, not open space with decoration hanging in it.
+    const slabTop = -2000;
+    ctx.fillStyle = '#4b5163';
+    ctx.fillRect(c.xStart, slabTop, c.xEnd - c.xStart, c.y - slabTop);
+    ctx.strokeStyle = '#1c1f2e';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(c.xStart, slabTop, c.xEnd - c.xStart, c.y - slabTop);
+    // diagonal hatching along the underside to further sell "solid mass", not a floating bar
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(c.xStart, slabTop, c.xEnd - c.xStart, c.y - slabTop);
+    ctx.clip();
+    ctx.strokeStyle = '#2f3444';
+    ctx.lineWidth = 2;
+    for (let hx = c.xStart - 40; hx < c.xEnd + 40; hx += 24) {
+      ctx.beginPath();
+      ctx.moveTo(hx, c.y);
+      ctx.lineTo(hx + 40, c.y - 40);
+      ctx.stroke();
+    }
+    ctx.restore();
     drawSpikes(c.xStart, c.xEnd, c.y, 1);
   }
 
@@ -319,10 +375,22 @@ function render() {
       ctx.lineWidth = 2;
       ctx.strokeRect(-10, -10, 20, 20);
     } else {
-      ctx.fillStyle = '#8b93ab'; // neutral — identical for every trait until touched
+      // trait is shown before touching, so there's nothing to misread up on the island
+      ctx.fillStyle = TRAIT_COLORS[trigger.trait];
+      ctx.strokeStyle = '#1c1f2e';
+      ctx.lineWidth = 2;
       ctx.fillRect(-10, -10, 20, 20);
+      ctx.strokeRect(-10, -10, 20, 20);
     }
     ctx.restore();
+
+    if (!trigger.used) {
+      ctx.fillStyle = '#e8eaf2';
+      ctx.font = '13px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(TRAIT_LABELS[trigger.trait], cx, trigger.y - 42);
+      ctx.textAlign = 'left';
+    }
   }
 
   ctx.fillStyle = TRAIT_COLORS[ball.activeTrait || ball.pendingTrait] || BALL_COLOR;
@@ -338,10 +406,11 @@ function render() {
   if (ball.activeTrait) {
     ctx.fillText(`발동 중: ${TRAIT_LABELS[ball.activeTrait]}`, 16, 48);
   }
+  ctx.fillText(`시간: ${runState.elapsed.toFixed(1)}초`, 16, 68);
   if (runState.status === 'won') {
     ctx.font = 'bold 28px sans-serif';
     ctx.fillStyle = '#4ade80';
-    ctx.fillText('클리어!', canvas.width / 2 - 50, canvas.height / 2);
+    ctx.fillText(`클리어! ${runState.elapsed.toFixed(1)}초`, canvas.width / 2 - 90, canvas.height / 2);
   } else if (runState.status === 'lost') {
     ctx.font = 'bold 28px sans-serif';
     ctx.fillStyle = '#ef4444';
@@ -352,7 +421,7 @@ function render() {
   ctx.fillStyle = '#e8eaf2';
   toasts.forEach((toast, i) => {
     ctx.globalAlpha = Math.min(1, toast.life);
-    ctx.fillText(toast.text, 16, 76 + i * 20);
+    ctx.fillText(toast.text, 16, 96 + i * 20);
     ctx.globalAlpha = 1;
   });
 }
