@@ -15,8 +15,8 @@ const IRON_DURATION = 3; // s, stays heavy across several landings, not just one
 const RUBBER_BOUNCE_MULT = 1.7; // next bounce launches much higher
 const ICE_DURATION = 3; // s, how long the slide lasts
 const ICE_MOVE_SPEED = MOVE_SPEED * 2.2; // higher top speed while sliding
-const ICE_ACCEL = 1.2; // lower = more momentum/slide before stopping or turning
-const HAZARD_SAFE_SPEED = 500; // px/s; only ice's slide reliably clears this
+const ICE_ACCEL_UP = 7; // reaches top speed quickly, so a bounce launched right after activating is already fast
+const ICE_ACCEL_DOWN = 1.2; // but sheds speed slowly -- keeps sliding long after the key is released
 
 const TRAIT_LABELS = {
   cloud: '구름',
@@ -54,6 +54,7 @@ let floorY = 0;
 let elevatedY = 0;
 let platforms = [];
 let ceilings = [];
+let pitSpikes = null;
 let triggers = [];
 let toasts = []; // { text, life }
 let levelWidth = 0;
@@ -75,15 +76,20 @@ function buildLevel() {
     { xStart: 900, xEnd: 1300, y: elevatedY }, // ledge reached via rubber boost
     { xStart: 1800, xEnd: 2050, y: elevatedY }, // landing after the wide glide
     { xStart: 2050, xEnd: 2390, y: elevatedY, ceiling: true }, // low tunnel: only iron's tiny bounce fits
-    { xStart: 2390, xEnd: 2540, y: elevatedY }, // after the tunnel
-    { xStart: 2540, xEnd: 2990, y: elevatedY }, // ice runway
-    { xStart: 2990, xEnd: 3190, y: elevatedY, hazard: true }, // spike strip: needs ice's speed
-    { xStart: 3190, xEnd: 4200, y: elevatedY, goal: true }, // goal — wide, since ice's speed can carry the landing far past the hazard
+    // after the tunnel: long enough that the first ice-boosted bounce (up to ~840px) lands
+    // back on solid ground instead of landing mid-pit -- the *next* bounce launches right at
+    // the edge with vx already maxed, which is what actually needs to clear the pit.
+    { xStart: 2390, xEnd: 3490, y: elevatedY }, // after tunnel + ice runway
+    // no platform from 3490 to 3890: a real pit, spikes at the bottom (see pitSpikes).
+    // normal/other bounces (~383px) fall short and drop in; only ice's speed clears it.
+    { xStart: 3890, xEnd: 4890, y: elevatedY, goal: true }, // goal — wide, since ice's speed can carry the landing far past the pit
   ];
 
   ceilings = platforms
     .filter((p) => p.ceiling)
     .map((p) => ({ xStart: p.xStart, xEnd: p.xEnd, y: p.y - 100 }));
+
+  pitSpikes = { xStart: 3490, xEnd: 3890, y: elevatedY + 140 };
 
   triggers = [
     { xStart: 100, xEnd: 180, y: floorY, trait: 'rubber', used: false },
@@ -197,7 +203,8 @@ function update(dt) {
 
   if (ball.activeTrait === 'ice') {
     const target = (input.right ? ICE_MOVE_SPEED : 0) - (input.left ? ICE_MOVE_SPEED : 0);
-    ball.vx += (target - ball.vx) * Math.min(1, ICE_ACCEL * dt);
+    const rate = Math.abs(target) > Math.abs(ball.vx) ? ICE_ACCEL_UP : ICE_ACCEL_DOWN;
+    ball.vx += (target - ball.vx) * Math.min(1, rate * dt);
   } else {
     ball.vx = (input.right ? MOVE_SPEED : 0) - (input.left ? MOVE_SPEED : 0);
   }
@@ -230,13 +237,13 @@ function update(dt) {
 
   checkTriggerPickup();
 
+  if (pitSpikes && ball.x >= pitSpikes.xStart && ball.x <= pitSpikes.xEnd && ball.y + BALL_RADIUS >= pitSpikes.y) {
+    failRun('가시밭에 떨어졌다 — 얼음으로 건너뛰어야 한다');
+    return;
+  }
+
   const support = getSupportPlatform(ball.x);
   if (support && ball.vy >= 0 && prevBottom <= support.y && ball.y + BALL_RADIUS >= support.y) {
-    if (support.hazard && Math.abs(ball.vx) < HAZARD_SAFE_SPEED) {
-      failRun('가시밭에 걸렸다 — 얼음으로 빠르게 통과해야 한다');
-      return;
-    }
-
     ball.y = support.y - BALL_RADIUS;
 
     if (support.goal) {
@@ -265,19 +272,41 @@ function update(dt) {
   toasts = toasts.filter((t) => (t.life -= dt) > 0);
 }
 
+function drawSpikes(xStart, xEnd, y, dir) {
+  // dir: -1 = spikes point up (floor hazard), 1 = spikes point down (ceiling hazard)
+  const SPIKE_W = 22;
+  const count = Math.max(1, Math.round((xEnd - xStart) / SPIKE_W));
+  const w = (xEnd - xStart) / count;
+  ctx.fillStyle = '#ef4444';
+  for (let i = 0; i < count; i++) {
+    const x0 = xStart + i * w;
+    const x1 = x0 + w;
+    const xm = x0 + w / 2;
+    ctx.beginPath();
+    ctx.moveTo(x0, y);
+    ctx.lineTo(x1, y);
+    ctx.lineTo(xm, y + dir * 18);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.save();
   ctx.translate(-cameraX, 0);
 
   for (const p of platforms) {
-    ctx.fillStyle = p.goal ? '#4ade80' : p.hazard ? '#ef4444' : p.ceiling ? '#a3a3a3' : '#3a4059';
+    ctx.fillStyle = p.goal ? '#4ade80' : p.ceiling ? '#a3a3a3' : '#3a4059';
     ctx.fillRect(p.xStart, p.y, p.xEnd - p.xStart, 6);
   }
 
+  if (pitSpikes) drawSpikes(pitSpikes.xStart, pitSpikes.xEnd, pitSpikes.y, -1);
+
   for (const c of ceilings) {
-    ctx.fillStyle = '#a3a3a3';
+    ctx.fillStyle = '#6b6b6b';
     ctx.fillRect(c.xStart, c.y - 6, c.xEnd - c.xStart, 6);
+    drawSpikes(c.xStart, c.xEnd, c.y, 1);
   }
 
   for (const trigger of triggers) {
