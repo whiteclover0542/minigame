@@ -277,6 +277,7 @@ motionToggleBtn.addEventListener('click', () => {
 function togglePause() {
   paused = !paused;
   pushToast(paused ? '일시정지 — Esc로 재개' : '재개');
+  document.getElementById('game-wrap').classList.toggle('is-paused', paused);
 }
 
 window.addEventListener('keydown', (e) => {

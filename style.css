@@ -38,6 +38,8 @@ html, body {
   border: 1px solid #454b60;
   border-radius: 6px;
   cursor: pointer;
+  z-index: 1;
+  transition: transform 0.15s, box-shadow 0.15s;
 }
 
 #motion-toggle:hover {
@@ -48,4 +50,13 @@ html, body {
   background: #4ade80;
   color: #14231a;
   border-color: #4ade80;
+}
+
+/* the in-canvas pause overlay dims everything it draws, but this button is a separate DOM element
+   sitting on top of the canvas -- without this it stays readable but easy to miss against the dim.
+   while paused it's worth surfacing clearly, since pausing to go fiddle with settings is exactly
+   when a player reaches for it. */
+#game-wrap.is-paused #motion-toggle {
+  transform: scale(1.12);
+  box-shadow: 0 0 0 3px rgba(232, 234, 242, 0.35), 0 4px 16px rgba(0, 0, 0, 0.5);
 }
