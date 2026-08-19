@@ -348,7 +348,7 @@ function trackTunnel(baseY, tunnelWidth, decoyTrait, markerX = 700) {
   };
 }
 
-const TRACKS_TO_CLEAR = 15; // how many random tracks make up one run, goal platform after the last
+const TRACKS_TO_CLEAR = 10; // how many random tracks make up one run, goal platform after the last
 
 // the pool of track *types* to draw from -- each entry's marker x was tuned in ISOLATION (fresh
 // launch at local x=0), not against any specific predecessor, and verified by simulating hundreds
