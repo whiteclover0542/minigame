@@ -3,7 +3,7 @@ const ctx = canvas.getContext('2d');
 
 const GRAVITY = 1800; // px/s^2
 const BOUNCE_VELOCITY = -820; // px/s, upward
-const MOVE_SPEED = 420; // px/s
+const MOVE_SPEED = 250; // px/s -- card 3 tuning candidate, was 420 (see PROGRESS.md 카드 3 기록)
 const BALL_RADIUS = 18;
 
 // per-trait tuning: how each effect bends the base physics while active
@@ -147,21 +147,31 @@ function buildLevel() {
     // normal/other bounces fall short and drop in; only ice's speed clears it.
 
     { xStart: 5700, xEnd: 6800, y: elevatedY, resetTrait: true, exceptTrait: 'rubber' }, // checkpoint after the first pit -- clears leftover ice slide, but must spare rubber (this section's own trait, picked up and re-landed on before it boosts). wide enough that the unboosted carrier bounce launched from the island always lands back on solid ground before the boost can apply on its *next* touchdown.
-    ...traitCluster(elevatedY, 6100, 'iron', 'rubber'), // decoy: iron / correct: rubber (climbs to the next tier, elevatedY2)
+    ...traitCluster(elevatedY, 6100, 'iron', 'rubber'), // decoy: iron / correct: rubber (climbs to the next tier)
 
-    { xStart: 6850, xEnd: 7850, y: elevatedY2, resetTrait: true, exceptTrait: 'cloud' }, // upper ledge reached via rubber boost
-    ...traitCluster(elevatedY2, 7005, 'rubber', 'cloud'), // decoy: rubber (extra height, not glide distance) / correct: cloud (glide)
+    // the mid-air trait swap: the rubber boost (launched from wherever the carrier bounce lands,
+    // ~x=6800) arcs up to ~540px above launch -- this island sits at 400px, comfortably inside that
+    // arc but far above anything a normal or even a step-to-island hop could ever reach, so landing
+    // here is only possible while riding that specific boosted arc. touching it grants cloud; the
+    // player then has to activate it immediately (while still ascending off this island) to convert
+    // the rest of the flight into a long glide -- the only way across the very wide gap that follows.
+    // no decoy: the challenge is steering into a fast-moving target mid-arc, not a right/wrong pick;
+    // missing it just means falling through the open gap ahead, same as any other missed hazard.
+    { xStart: 7050, xEnd: 7130, y: elevatedY - 400, trait: 'cloud', used: false }, // sky island, 400px above the elevatedY carrier ground
 
-    { xStart: 8100, xEnd: 9100, y: elevatedY2, resetTrait: true, exceptTrait: 'iron' }, // landing after the second glide -- also clears leftover cloud float
-    ...traitCluster(elevatedY2, 8470, 'cloud', 'iron'), // decoy: cloud (still too tall for the tunnel) / correct: iron (low tunnel)
+    { xStart: 7300, xEnd: 8120, y: elevatedY2, resetTrait: true, exceptTrait: 'iron' }, // landing after the sky-glide -- shortened to match MOVE_SPEED's current value (the glide's horizontal reach scales directly with it); wide, since the glide comes down fast and its exact landing spot varies with reaction timing
+    ...traitCluster(elevatedY2, 7670, 'cloud', 'iron'), // decoy: cloud (already spent, and still too tall for the tunnel anyway) / correct: iron (low tunnel)
+    // tunnel kept close behind the island -- IRON_DURATION*MOVE_SPEED is the hard budget from
+    // pickup to tunnel exit, and MOVE_SPEED's current value shrinks that budget too, so this gap
+    // also had to come in tighter than before to leave heavy-bounce time to spare inside the tunnel.
 
-    { xStart: 9100, xEnd: 9440, y: elevatedY2, ceiling: true }, // second low tunnel: only iron's tiny bounce fits
+    { xStart: 8120, xEnd: 8460, y: elevatedY2, ceiling: true }, // low tunnel: only iron's tiny bounce fits
 
-    { xStart: 9440, xEnd: 10750, y: elevatedY2, resetTrait: true, exceptTrait: 'ice' }, // after tunnel + ice runway -- also clears leftover heavy iron
-    ...traitCluster(elevatedY2, 9498, 'rubber', 'ice'), // decoy: rubber (height, not the speed needed to clear the pit) / correct: ice (speed)
-    // no platform from 10750 to 11150: a second real pit, spikes at the bottom (see pits).
+    { xStart: 8460, xEnd: 9770, y: elevatedY2, resetTrait: true, exceptTrait: 'ice' }, // after tunnel + ice runway -- also clears leftover heavy iron
+    ...traitCluster(elevatedY2, 8518, 'rubber', 'ice'), // decoy: rubber (height, not the speed needed to clear the pit) / correct: ice (speed)
+    // no platform from 9770 to 10170: a second real pit, spikes at the bottom (see pits).
 
-    { xStart: 11150, xEnd: 12150, y: elevatedY2, goal: true }, // goal — wide, since ice's speed can carry the landing far past the pit
+    { xStart: 10170, xEnd: 11170, y: elevatedY2, goal: true }, // goal — wide, since ice's speed can carry the landing far past the pit
   ];
 
   ceilings = platforms
@@ -170,7 +180,7 @@ function buildLevel() {
 
   pits = [
     { xStart: 5300, xEnd: 5700, y: elevatedY + 140 },
-    { xStart: 10750, xEnd: 11150, y: elevatedY2 + 140 },
+    { xStart: 9770, xEnd: 10170, y: elevatedY2 + 140 },
   ];
 
   // trait is shown before touching (color + label, see render()). it's granted only on an actual
@@ -238,6 +248,18 @@ window.addEventListener('keyup', (e) => handleKey(e, false));
 canvas.addEventListener('click', dismissIntro);
 window.addEventListener('resize', () => {
   resizeCanvas();
+});
+
+// losing focus (alt-tab, clicking outside the page) never fires keyup for whatever was held --
+// without this, a key held at the moment of blur stays "down" forever, so the ball keeps drifting
+// on its own after focus returns even though nothing is physically pressed anymore.
+function releaseHeldInput() {
+  input.left = false;
+  input.right = false;
+}
+window.addEventListener('blur', releaseHeldInput);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) releaseHeldInput();
 });
 
 function pushToast(text) {
@@ -501,6 +523,14 @@ function render() {
     ctx.fillText(`발동 중: ${TRAIT_LABELS[ball.activeTrait]}`, 16, 48);
   }
   ctx.fillText(`시간: ${runState.elapsed.toFixed(1)}초`, 16, 68);
+
+  // card 3: current difficulty rule + tuned value, always visible (not just in a debug panel)
+  ctx.font = '13px sans-serif';
+  ctx.fillStyle = '#8b93a7';
+  ctx.textAlign = 'right';
+  ctx.fillText(`난이도 — 이동 속도: ${MOVE_SPEED}px/s`, canvas.width - 16, 24);
+  ctx.textAlign = 'left';
+
   if (runState.status === 'won') {
     ctx.font = 'bold 28px sans-serif';
     ctx.fillStyle = '#4ade80';
