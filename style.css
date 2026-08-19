@@ -49,6 +49,7 @@ html, body {
 
 #motion-toggle,
 #help-toggle,
+#restart-toggle,
 #help-close {
   padding: 10px 16px;
   font-size: 15px;
@@ -63,6 +64,7 @@ html, body {
 
 #motion-toggle:hover,
 #help-toggle:hover,
+#restart-toggle:hover,
 #help-close:hover {
   background: #3a4059;
 }

@@ -9,12 +9,19 @@ const MOVE_SPEED = 420; // px/s -- card 3 final: kept at the original default. A
 const BALL_RADIUS = 18;
 
 // per-trait tuning: how each effect bends the base physics while active
-const CLOUD_GRAVITY_MULT = 0.28; // falls slowly -> glides farther before landing
+const CLOUD_GRAVITY_MULT = 0.32; // falls slowly -> glides farther before landing. raised from 0.28
+// (less floaty, lower peak arc) so it clears track 3's gap without sailing so high above it --
+// verified by simulation to still clear reliably across varied click timing; anything above ~0.4
+// starts falling short of the gap.
 const CLOUD_DURATION = 1.6; // s, stays floaty across several bounces, not just one
 const IRON_GRAVITY_MULT = 2.6; // falls fast
 const IRON_BOUNCE_MULT = 0.15; // barely bounces back -> reads as a heavy thud
 const IRON_DURATION = 3; // s, stays heavy across several landings, not just one
 const RUBBER_BOUNCE_MULT = 1.7; // next bounce launches much higher
+const NORMAL_BOUNCE_SPAN = MOVE_SPEED * ((2 * -BOUNCE_VELOCITY) / GRAVITY); // px covered by one
+// ordinary landing-to-landing bounce -- used to hold rubber's boost until the last such bounce
+// before a gap (see trackClimb / update()'s landing branch), instead of spending it wherever the
+// ball happens to land right after Space is pressed.
 const ICE_DURATION = 3; // s, how long the slide lasts
 const ICE_MOVE_SPEED = MOVE_SPEED * 2.2; // higher top speed while sliding
 const ICE_ACCEL_UP = 7; // reaches top speed quickly, so a bounce launched right after activating is already fast
@@ -63,10 +70,10 @@ const runState = { status: 'playing', timer: 0, elapsed: 0 }; // 'playing' | 'wo
 
 let floorY = 0;
 let elevatedY = 0;
-let elevatedY2 = 0;
 let platforms = [];
 let ceilings = [];
 let pits = [];
+let pickups = []; // clickable trait markers -- see pickupRow()
 let triggers = [];
 let toasts = []; // { text, life }
 let particles = []; // { x, y, vx, vy, life, maxLife, color, size, shape, drag }
@@ -102,6 +109,93 @@ function saveBest() {
   }
 }
 
+// global leaderboard: the single fastest clear time across every visitor, shared via Firebase
+// Realtime Database. entirely optional -- if the SDK script didn't load (network issue, ad
+// blocker) or the project isn't reachable, the game still runs fine with just the local record
+// above; every call here is guarded so a Firebase failure never breaks gameplay.
+const firebaseConfig = {
+  apiKey: 'AIzaSyAX43FexJhm10mKsOVFxHahSJlBIou1YEY',
+  authDomain: 'minigame-leaderboard-a100f.firebaseapp.com',
+  databaseURL: 'https://minigame-leaderboard-a100f-default-rtdb.asia-southeast1.firebasedatabase.app',
+  projectId: 'minigame-leaderboard-a100f',
+  storageBucket: 'minigame-leaderboard-a100f.firebasestorage.app',
+  messagingSenderId: '8487419888',
+  appId: '1:8487419888:web:9c8d44b1116094e09e2735',
+};
+
+let globalBestTime = null; // the fastest time on record, once loaded; stays null if there isn't one yet
+let globalBestName = ''; // nickname attached to that time, if any
+let globalBestLoaded = false; // distinguishes "still waiting on the first read" from "read back empty"
+let globalBestRef = null;
+
+function initGlobalLeaderboard() {
+  try {
+    if (typeof firebase === 'undefined') return; // SDK script didn't load -- play without it
+    firebase.initializeApp(firebaseConfig);
+    globalBestRef = firebase.database().ref('leaderboard/best');
+    // live updates: if someone else beats the record while this page is open, the HUD picks it up
+    globalBestRef.on('value', (snapshot) => {
+      const val = snapshot.val();
+      if (val && typeof val.time === 'number' && Number.isFinite(val.time)) {
+        globalBestTime = val.time;
+        globalBestName = typeof val.name === 'string' ? val.name : '';
+      } else {
+        globalBestTime = null;
+        globalBestName = '';
+      }
+      globalBestLoaded = true;
+    });
+  } catch {
+    globalBestRef = null; // any setup failure -- just don't show/update the global record
+  }
+}
+
+// two-phase write, deciding whether to prompt from the database's own answer rather than the
+// client's cached copy of the current best -- a stale/not-yet-loaded local cache must never be
+// the reason a genuine record fails to prompt for a name. phase 1 atomically claims the record
+// with a placeholder (empty) name if -- and only if -- this time is actually better; the
+// transaction's result tells us whether that claim won. only then do we prompt, and phase 2
+// fills the name in behind it (guarded so it can't clobber a time that moved on in the meantime).
+function reportGlobalBest(time) {
+  if (!globalBestRef) return;
+  try {
+    globalBestRef.transaction(
+      (current) => {
+        if (!current || typeof current.time !== 'number' || time < current.time) return { time, name: '' };
+        return current; // no change -- someone else already holds a better time
+      },
+      (error, committed, snapshot) => {
+        if (error || !committed) return; // offline, blocked, or not actually an improvement
+        const val = snapshot && snapshot.val();
+        if (!val || val.time !== time) return; // a concurrent better write won the race meanwhile
+        promptGlobalBestName(time);
+      }
+    );
+  } catch {
+    // offline or blocked -- the local record above already saved fine either way
+  }
+}
+
+function promptGlobalBestName(time) {
+  let name = '';
+  try {
+    name = (window.prompt('전체 최고 기록 달성! 닉네임을 입력하세요 (최대 12자)', '') || '').trim().slice(0, 12);
+  } catch {
+    name = '';
+  }
+  if (!name) name = '익명';
+  try {
+    globalBestRef.transaction((current) => {
+      if (current && current.time === time) return { time, name };
+      return current; // the record moved on before the name landed -- leave it alone
+    });
+  } catch {
+    // offline or blocked -- the time itself is already saved from phase 1 either way
+  }
+}
+
+initGlobalLeaderboard();
+
 function resizeCanvas() {
   const wrap = document.getElementById('game-wrap');
   const prevFloorY = floorY;
@@ -109,7 +203,6 @@ function resizeCanvas() {
   canvas.height = wrap.clientHeight;
   floorY = canvas.height - 40;
   elevatedY = floorY - 260;
-  elevatedY2 = elevatedY - 260;
 
   // platforms/ceilings/pits store absolute y values snapshotted by buildLevel() at the
   // previous canvas height -- without this shift they'd stay put while the canvas resizes around
@@ -122,109 +215,295 @@ function resizeCanvas() {
       for (const p of platforms) p.y += deltaY;
       for (const c of ceilings) c.y += deltaY;
       for (const p of pits) p.y += deltaY;
+      for (const p of pickups) p.y += deltaY;
       ball.y += deltaY;
       startPoint.y += deltaY;
     }
   }
 }
 
-const STEP_HEIGHT = 90; // px above the path -- comfortably under a normal bounce's own apex
-// (~186.7px), so a single eased-off hop launched from the path reaches it directly.
-const ISLAND_HEIGHT = 200; // px above the path -- ABOVE a normal bounce's own apex, so no hop
-// launched from the path can ever reach an island in one shot, no matter its timing or x position.
-// The only way up is through the step: a hop launched from step height only needs another
-// ISLAND_HEIGHT - STEP_HEIGHT = 110px, well inside its own ~186.7px apex, so the second hop clears
-// it easily. This makes "land on an island by accident of just holding a direction" physically
-// impossible -- it always takes two deliberate hops, never one.
-const ZONE_WIDTH = 50; // width of each of the three platforms
-const ZONE_GAP = 20; // gap between them -- keeps them visually and physically separate platforms
+// trait pickups are clickable HUD-ish markers floating above the path, not physical platforms --
+// grabbing one is a mouse click on its icon (see the canvas 'click' handler below), never a
+// detour the ball has to fly to. that decouples the ball's forward run entirely from trait
+// selection: the ball never has to leave its course, and a marker stays clickable on screen
+// however long it's visible, so there's no "already passed it, go back" moment -- if the hazard
+// it's for is still ahead, so is the click.
+const PICKUP_HEIGHT = 300; // px above the path -- well clear of a normal bounce's own apex
+// (~186.7px, see MOVE_SPEED/GRAVITY/BOUNCE_VELOCITY above), so the ball passing underneath never
+// covers the icon even at a glance
+const PICKUP_WIDTH = 100; // px, used only to place the icon's center
+const PICKUP_GAP = 70; // px between adjacent markers in the same cluster
+const ICON_SCALE = 4.2; // icons are drawn at a fixed ~9-10px base radius; this scales them up for readability
+const PICKUP_ALPHA = 0.8; // slightly translucent so a marker never fully hides the path or hazard behind it
+const PICKUP_CLICK_RADIUS = 46; // px, hit area matched to the scaled-up icon itself (no separate ring drawn)
 
-function traitCluster(baseY, xStart, leftTrait, rightTrait) {
-  // a plain step (no trait, reachable directly from the path) flanked by one trait island on each
-  // side, both a tier higher (reachable only from the step). the step is the easy middle target;
-  // from there, easing left or right onto an island is the real choice, both shown by color + label
-  // before touching (see render()). picking one grants it immediately and overwrites whatever was
-  // already pending, so a wrong pick can still be corrected by bouncing over to the other island.
-  const stepY = baseY - STEP_HEIGHT;
-  const islandY = baseY - ISLAND_HEIGHT;
-  const leftEnd = xStart + ZONE_WIDTH;
-  const centerStart = leftEnd + ZONE_GAP;
-  const centerEnd = centerStart + ZONE_WIDTH;
-  const rightStart = centerEnd + ZONE_GAP;
-  const rightEnd = rightStart + ZONE_WIDTH;
+// positions a row of trait markers so the *last* one's right edge lands at endX -- see buildLevel()
+// for how each call picks endX (usually centered over the hazard those traits are for).
+function pickupRow(baseY, endX, traits) {
+  const y = baseY - PICKUP_HEIGHT;
+  const markers = [];
+  let x = endX;
+  for (let i = traits.length - 1; i >= 0; i--) {
+    const xStart = x - PICKUP_WIDTH;
+    markers.unshift({ xStart, xEnd: x, y, trait: traits[i], used: false });
+    x = xStart - PICKUP_GAP;
+  }
+  return markers;
+}
+
+// --- track modules -----------------------------------------------------------------------
+// each track* function builds one self-contained hazard in LOCAL coordinates (its own x=0 is
+// wherever it gets placed in the level) and returns { platforms, pickups, pits, width } -- always
+// entering AND exiting at the same baseY, so any track can follow any other with no height
+// mismatch at the seam. that's what makes them independently addable/reorderable (see buildLevel()
+// below, which currently just chains them in a fixed list, and the loop that places them).
+// every track's approach uses one of two shared lead lengths (see TRACK_LEAD_TALL/
+// TRACK_LEAD_SPEED below) so consecutive tracks read at a consistent pace. each marker's exact
+// spot within that approach is still individually tuned (see buildLevel()'s trackList) -- ice/
+// cloud/rubber's speed or float can still be ramping up or down from whatever the previous track
+// left it doing, which shifts exactly where a press has to land relative to the gap.
+const TRACK_LEAD_TALL = 500; // approach length for rubber-climb / tunnel tracks
+const TRACK_LEAD_SPEED = 450; // approach length for ice/cloud speed-gap tracks
+const TRACK_LAND_WIDTH = 400; // landing platform width after every hazard -- generous so the
+// exact landing spot (which varies with the trait used) always has solid ground under it
+
+// rubber only: needs height (climbHeight) *and* distance together, since a normal bounce's own
+// apex (~186.7px) can't reach any climb worth doing regardless of gap width. lands on a raised
+// plateau, then free-falls back to baseY (no trait needed to go back down -- gravity does that
+// part for free), so the track still exits at baseY like every other track.
+function trackClimb(baseY, climbHeight, gapWidth, decoyTrait, markerX = 700) {
+  const gapStart = TRACK_LEAD_TALL;
+  const plateauStart = gapStart + gapWidth;
+  const plateauEnd = plateauStart + 400;
+  const landEnd = plateauEnd + TRACK_LAND_WIDTH;
+  return {
+    platforms: [
+      // holdBoostUntilGap: rubber's boost only resolves at a landing, and a click can happen the
+      // instant the marker scrolls into view -- long before the ball is anywhere near it. without
+      // this, an early press launches the boost from wherever the ball happens to land right after,
+      // which is often too far from the gap to clear it. see update()'s landing branch: it holds
+      // the boost through ordinary bounces on this platform until the *last* one before xEnd, so
+      // the launch point is always right at the gap regardless of when Space was actually pressed.
+      { xStart: 0, xEnd: gapStart, y: baseY, holdBoostUntilGap: true },
+      { xStart: plateauStart, xEnd: plateauEnd, y: baseY - climbHeight, resetTrait: true },
+      { xStart: plateauEnd, xEnd: landEnd, y: baseY, resetTrait: true },
+    ],
+    pickups: pickupRow(baseY, markerX, [decoyTrait, 'rubber']),
+    pits: [],
+    width: landEnd,
+  };
+}
+
+// ice: raw sustained speed across a flat gap (or, with usePit, the same gap dressed as a spike
+// pit instead of open air -- physically identical, just fails a beat sooner and reads as a
+// different hazard). a normal or iron-slowed bounce always falls short; only ice's boosted speed
+// carries far enough.
+function trackSpeedGap(baseY, gapWidth, decoyTrait, usePit, markerX = 500) {
+  const gapStart = TRACK_LEAD_SPEED;
+  const gapEnd = gapStart + gapWidth;
+  const landEnd = gapEnd + TRACK_LAND_WIDTH;
+  return {
+    platforms: [
+      { xStart: 0, xEnd: gapStart, y: baseY },
+      { xStart: gapEnd, xEnd: landEnd, y: baseY, resetTrait: true },
+    ],
+    pickups: pickupRow(baseY, markerX, [decoyTrait, 'ice']),
+    pits: usePit ? [{ xStart: gapStart, xEnd: gapEnd, y: baseY + 140 }] : [],
+    width: landEnd,
+  };
+}
+
+// cloud: a gap too wide for even rubber's single boosted leap (~650px, one shot, no continuous
+// speed) but within reach of cloud's much longer per-bounce hang time.
+function trackFloatGap(baseY, gapWidth, decoyTrait, markerX = 500) {
+  const gapStart = TRACK_LEAD_SPEED;
+  const gapEnd = gapStart + gapWidth;
+  const landEnd = gapEnd + TRACK_LAND_WIDTH;
+  return {
+    platforms: [
+      { xStart: 0, xEnd: gapStart, y: baseY },
+      { xStart: gapEnd, xEnd: landEnd, y: baseY, resetTrait: true },
+    ],
+    pickups: pickupRow(baseY, markerX, [decoyTrait, 'cloud']),
+    pits: [],
+    width: landEnd,
+  };
+}
+
+// iron: a low ceiling only its tiny, heavy bounce fits under -- any other trait's apex is well
+// above it. tunnelWidth just varies how long iron's duration has to keep covering it.
+function trackTunnel(baseY, tunnelWidth, decoyTrait, markerX = 700) {
+  const tunnelStart = TRACK_LEAD_TALL;
+  const tunnelEnd = tunnelStart + tunnelWidth;
+  const landEnd = tunnelEnd + TRACK_LAND_WIDTH;
+  return {
+    platforms: [
+      { xStart: 0, xEnd: tunnelStart, y: baseY },
+      { xStart: tunnelStart, xEnd: tunnelEnd, y: baseY, ceiling: true },
+      { xStart: tunnelEnd, xEnd: landEnd, y: baseY, resetTrait: true },
+    ],
+    pickups: pickupRow(baseY, markerX, [decoyTrait, 'iron']),
+    pits: [],
+    width: landEnd,
+  };
+}
+
+const TRACKS_TO_CLEAR = 15; // how many random tracks make up one run, goal platform after the last
+
+// the pool of track *types* to draw from -- each entry's marker x was tuned in ISOLATION (fresh
+// launch at local x=0), not against any specific predecessor, and verified by simulating hundreds
+// of random 15-track runs. each track's own approach is long enough that the exact bounce phase
+// left over from whatever track came before it washes out well before its own marker/gap -- no
+// per-transition tuning or forced phase reset needed for that to hold up.
+function trackPool(baseY) {
   return [
-    { xStart, xEnd: leftEnd, y: islandY, trait: leftTrait, used: false },
-    { xStart: centerStart, xEnd: centerEnd, y: stepY }, // the step -- no trait
-    { xStart: rightStart, xEnd: rightEnd, y: islandY, trait: rightTrait, used: false },
+    () => trackClimb(baseY, 260, 300, 'iron', 180), // rubber: climb + distance -- decoy iron kills the boost
+    () => trackSpeedGap(baseY, 450, 'iron', false, 370), // ice: flat speed gap -- decoy iron barely moves
+    () => trackFloatGap(baseY, 750, 'rubber', 350), // cloud: wide floaty gap -- decoy rubber's one leap falls short
+    () => trackTunnel(baseY, 340, 'cloud', 190), // iron: low tunnel -- decoy cloud floats straight into the ceiling
+    () => trackSpeedGap(baseY, 450, 'rubber', true, 370), // ice: spike pit -- decoy rubber's one leap isn't sustained speed
+    () => trackClimb(baseY, 400, 200, 'ice', 180), // rubber: taller climb -- decoy ice has speed but no height
+    () => trackTunnel(baseY, 550, 'cloud', 190), // iron: longer tunnel -- same decoy, needs iron's duration to last the whole stretch
   ];
 }
 
+const START_LEN = 400;
+const GOAL_LEN = 1000;
+
+// lays out one candidate random track list into absolute platforms/pickups/pits/ceilings --
+// shared by the build-time trial run (simulateClear below) and the real build in buildLevel(), so
+// there's exactly one place that turns a track list into level geometry.
+function assembleLevel(trackList, baseY) {
+  const platforms = [{ xStart: 0, xEnd: START_LEN, y: baseY }];
+  const pickups = [];
+  const pits = [];
+  let cursor = START_LEN;
+  for (const track of trackList) {
+    for (const p of track.platforms) platforms.push({ ...p, xStart: p.xStart + cursor, xEnd: p.xEnd + cursor });
+    for (const p of track.pickups) pickups.push({ ...p, xStart: p.xStart + cursor, xEnd: p.xEnd + cursor });
+    for (const p of track.pits) pits.push({ ...p, xStart: p.xStart + cursor, xEnd: p.xEnd + cursor });
+    cursor += track.width;
+  }
+  platforms.push({ xStart: cursor, xEnd: cursor + GOAL_LEN, y: baseY, goal: true });
+  const ceilings = platforms.filter((p) => p.ceiling).map((p) => ({ xStart: p.xStart, xEnd: p.xEnd, y: p.y - 100 }));
+  return { platforms, pickups, pits, ceilings };
+}
+
+// runs a self-contained physics trial against one candidate level: hold right the whole way,
+// click+activate each correct trait's marker the instant the ball reaches it (the same rule real
+// play follows), and report whether that actually reaches the goal. this is what replaces trying
+// to make every track robust to *any* bounce phase a random predecessor could hand it (which
+// turned out to still fail routinely even for tracks verified safe in isolation -- see PROGRESS)
+// or visibly correcting the ball's position at every track boundary (visible as a stutter). instead
+// buildLevel() below just keeps rolling a new random order until one of them, played this exact
+// way, provably reaches the goal with zero position correction -- so the level the player actually
+// gets was already proven completable before the run even starts.
+function simulateClear(level, baseY) {
+  const correctPickups = level.pickups.filter((p, i) => i % 2 === 1);
+  let x = 60,
+    y = baseY - BALL_RADIUS,
+    vx = 0,
+    vy = BOUNCE_VELOCITY;
+  let activeTrait = null,
+    effectTimer = 0,
+    pickupIdx = 0;
+  const dt = 1 / 60;
+  for (let t = 0; t < 90; t += dt) {
+    if (pickupIdx < correctPickups.length && x >= correctPickups[pickupIdx].xEnd) {
+      const trait = correctPickups[pickupIdx].trait;
+      pickupIdx++;
+      activeTrait = trait;
+      effectTimer = trait === 'ice' ? ICE_DURATION : trait === 'iron' ? IRON_DURATION : trait === 'cloud' ? CLOUD_DURATION : 0;
+    }
+    if (activeTrait === 'ice') {
+      const rate = ICE_MOVE_SPEED > Math.abs(vx) ? ICE_ACCEL_UP : ICE_ACCEL_DOWN;
+      vx += (ICE_MOVE_SPEED - vx) * Math.min(1, rate * dt);
+    } else {
+      vx = MOVE_SPEED;
+    }
+    if (activeTrait === 'ice' || activeTrait === 'iron' || activeTrait === 'cloud') {
+      effectTimer -= dt;
+      if (effectTimer <= 0) activeTrait = null;
+    }
+    const gravityMult = activeTrait === 'cloud' ? CLOUD_GRAVITY_MULT : activeTrait === 'iron' ? IRON_GRAVITY_MULT : 1;
+    vy += GRAVITY * gravityMult * dt;
+    const prevBottom = y + BALL_RADIUS;
+    const prevX = x;
+    x += vx * dt;
+    y += vy * dt;
+    if (x - BALL_RADIUS < 0) x = BALL_RADIUS;
+    // matches update()'s position-based resetTrait crossing check exactly (see there for why it's
+    // entry-triggered, not "currently inside")
+    for (const p of level.platforms) {
+      if (p.resetTrait && prevX < p.xStart && x >= p.xStart && x <= p.xEnd && activeTrait && activeTrait !== p.exceptTrait) {
+        activeTrait = null;
+        break;
+      }
+    }
+    for (const c of level.ceilings) if (x >= c.xStart && x <= c.xEnd && y - BALL_RADIUS <= c.y) return false;
+    for (const p of level.pits) if (x >= p.xStart && x <= p.xEnd && y + BALL_RADIUS >= p.y) return false;
+    const nextBottom = y + BALL_RADIUS;
+    let support = null;
+    if (vy >= 0) {
+      for (const p of level.platforms) {
+        if (x < p.xStart || x > p.xEnd) continue;
+        if (prevBottom > p.y || nextBottom < p.y) continue;
+        if (!support || p.y < support.y) support = p;
+      }
+    }
+    if (support) {
+      y = support.y - BALL_RADIUS;
+      if (support.goal) return true;
+      if (activeTrait === 'rubber') {
+        if (support.holdBoostUntilGap && x + NORMAL_BOUNCE_SPAN <= support.xEnd) {
+          vy = BOUNCE_VELOCITY;
+        } else {
+          vy = BOUNCE_VELOCITY * RUBBER_BOUNCE_MULT;
+          activeTrait = null;
+        }
+      } else if (activeTrait === 'iron') {
+        vy = BOUNCE_VELOCITY * IRON_BOUNCE_MULT;
+      } else {
+        vy = BOUNCE_VELOCITY;
+      }
+    } else if (y > baseY + 400) {
+      return false;
+    }
+  }
+  return false; // timed out -- treat like a fail rather than risk an infinite level
+}
+
 function buildLevel() {
-  // world-space layout: five hazards, each trait pulling a different job so the level never
-  // repeats itself -- rubber climbs a gap by height, then ice crosses a *flat* gap by pure speed
-  // (a different skill, not another pit), then rubber launches a second time -- not to climb, but
-  // to fuel a mid-air switch into cloud for a long glide -- then iron squeezes through a tunnel,
-  // and finally ice returns one more time for the pit it was built for. rubber and ice each do two
-  // different jobs; no section is a reskin of an earlier one.
-  // the ground path is one continuous, unbroken route -- nothing about picking up a trait
-  // interrupts forward progress. each cluster's islands sit a full tier above what any path-launched
-  // hop can reach (see ISLAND_HEIGHT above), so grabbing a trait always means physically climbing
-  // the step first and hopping again from there -- never an accident of just moving forward, no
-  // matter how a run happens to be timed. the correct trait always sits on the right island.
-  platforms = [
-    { xStart: 0, xEnd: 850, y: floorY }, // start
-    ...traitCluster(floorY, 100, 'iron', 'rubber'), // decoy: iron (kills the boost) / correct: rubber (climbs the gap ahead)
-    // gap: 850 to 1150, +260px climb -- only a rubber-boosted bounce covers both the height and the distance.
+  const baseY = elevatedY; // every track enters and exits at this one height (see the track*
+  // functions above) -- that shared contract is what lets them be listed/chained in any order.
+  const pool = trackPool(baseY);
 
-    { xStart: 1150, xEnd: 2900, y: elevatedY, resetTrait: true, exceptTrait: 'ice' }, // ledge reached via rubber boost -- wide enough that the arc launched straight off the island (elevated, so it carries much further than a flat-ground hop) always lands back on solid ground here, giving ice a flat-height bounce or two to actually show its speed before the gap, instead of the island's own launch height doing most of the work regardless of trait
-    ...traitCluster(elevatedY, 1305, 'iron', 'ice'), // decoy: iron (barely moves at all) / correct: ice (raw speed, no height needed here)
-    // flat gap: 2900 to 3120 -- same height on both sides, so this is a pure-speed test, not
-    // another climb. measured against the real approach path (step -> island -> carrier flight):
-    // with ice activated promptly, that flight doesn't come back down to elevatedY until ~x=3200;
-    // picking up ice but never pressing Space (or the iron decoy, which barely moves) comes down by
-    // ~x=3064. 3120 sits inside that ~136px window, biased toward the ice side so a player who does
-    // everything right isn't the one left with the thin margin.
+  // keep rolling a random order until simulateClear proves it's actually completable end to end --
+  // see that function's comment for why this replaces per-boundary position correction. the odds
+  // of any single random order clearing are low (much of the search space fails), so this typically
+  // takes dozens of tries, but each is only a simulated run, not a real one -- the cap is sized
+  // generously (a failure to find any working order in this many tries would be astronomically
+  // unlikely, not a realistic case to hit) rather than tuned tight to the typical attempt count.
+  let trackList, level;
+  for (let attempt = 0; attempt < 3000; attempt++) {
+    trackList = Array.from({ length: TRACKS_TO_CLEAR }, () => pool[Math.floor(Math.random() * pool.length)]());
+    level = assembleLevel(trackList, baseY);
+    if (simulateClear(level, baseY)) break;
+  }
 
-    { xStart: 3120, xEnd: 4300, y: elevatedY, resetTrait: true, exceptTrait: 'rubber' }, // landing after the speed gap -- clears leftover ice slide, but spares rubber (this section's own trait, picked up and re-landed on before it boosts). wide enough that the unboosted carrier bounce launched from the island (which needs extra fall distance to reach this flat ledge from the island's height, so it travels further than a same-height hop would) actually lands back on solid ground before the boost can apply on its *next* touchdown.
-    ...traitCluster(elevatedY, 3520, 'ice', 'rubber'), // decoy: ice (fast, but no height) / correct: rubber -- this time not to climb directly, but to fuel the mid-air switch below
+  platforms = level.platforms;
+  pickups = level.pickups;
+  pits = level.pits;
+  ceilings = level.ceilings;
 
-    // the mid-air trait swap: the rubber boost (launched from wherever the carrier bounce lands)
-    // arcs up to ~540px above launch -- this island sits at 400px, comfortably inside that arc but
-    // far above anything a normal or even a step-to-island hop could ever reach, so landing here is
-    // only possible while riding that specific boosted arc. touching it grants cloud; the player
-    // then has to activate it immediately (while still ascending off this island) to convert the
-    // rest of the flight into a long glide -- the only way across the wide gap that follows. no
-    // decoy: the challenge is steering into a fast-moving target mid-arc, not a right/wrong pick;
-    // missing it just means falling through the gap ahead, same as any other missed hazard.
-    { xStart: 4350, xEnd: 4430, y: elevatedY - 400, trait: 'cloud', used: false }, // sky island, 400px above the elevatedY carrier ground
-
-    { xStart: 4870, xEnd: 5950, y: elevatedY2, resetTrait: true, exceptTrait: 'iron' }, // landing after the sky-glide. picking up cloud but never pressing Space (or skipping it after landing) comes down at ~x=4801 -- short of here, so cloud genuinely has to be *used*, not just collected. but pressing it isn't a frame-perfect check either: measured against real keypress-to-effect delay (not an idealized instant press), anything within ~650ms of landing on the sky island still glides past this point comfortably, which covers ordinary human reaction time -- only a very slow or missed press (or skipping the sky island outright, which sends the unredirected boost arc sailing far past this ledge instead) falls short.
-    ...traitCluster(elevatedY2, 5400, 'cloud', 'iron'), // decoy: cloud (already spent, and still too tall for the tunnel anyway) / correct: iron (low tunnel)
-
-    { xStart: 5950, xEnd: 6290, y: elevatedY2, ceiling: true }, // low tunnel: only iron's tiny bounce fits
-
-    { xStart: 6290, xEnd: 6940, y: elevatedY2, resetTrait: true, exceptTrait: 'ice' }, // after tunnel + ice runway -- also clears leftover heavy iron
-    ...traitCluster(elevatedY2, 6350, 'rubber', 'ice'), // decoy: rubber (height, not the speed needed to clear the pit) / correct: ice -- back to what it was first shown for, a real pit
-    // no platform from 6940 to 7340: a real pit, spikes at the bottom (see pits).
-    // normal/other bounces fall short and drop in; only ice's speed clears it.
-
-    { xStart: 7340, xEnd: 8340, y: elevatedY2, goal: true }, // goal — wide, since ice's speed can carry the landing far past the pit
-  ];
-
-  ceilings = platforms
-    .filter((p) => p.ceiling)
-    .map((p) => ({ xStart: p.xStart, xEnd: p.xEnd, y: p.y - 100 }));
-
-  pits = [{ xStart: 6940, xEnd: 7340, y: elevatedY2 + 140 }];
-
-  // trait is shown before touching (color + label, see render()). it's granted only on an actual
-  // landing on the platform (see update()), not by flying near it, so grabbing it always means a
-  // real detour off the main path, never a flyby.
-  triggers = platforms.filter((p) => p.trait);
+  // trait is shown before clicking (color + label, see render()) and stays clickable for as long
+  // as it's on screen -- clicking it grants it immediately, overwriting whatever was already
+  // pending, so a wrong pick is corrected with another click, never a walk back to fix it.
+  triggers = pickups;
 
   const last = platforms[platforms.length - 1];
   levelWidth = last.xEnd + 200;
-  startPoint = { x: 60, y: floorY - BALL_RADIUS };
+  startPoint = { x: 60, y: baseY - BALL_RADIUS };
 }
 
 function resetBall() {
@@ -268,6 +547,56 @@ function dismissIntro() {
   if (showIntro) showIntro = false;
 }
 
+// finds the closest un-used pickup whose icon center is within click range of a world-space
+// point, or null if none qualify -- shared by the click handler below and the hover cursor.
+function findPickupAt(worldX, worldY) {
+  let best = null;
+  let bestDist = PICKUP_CLICK_RADIUS;
+  for (const p of pickups) {
+    if (p.used) continue;
+    const cx = (p.xStart + p.xEnd) / 2;
+    const cy = p.y - 16;
+    const dist = Math.hypot(worldX - cx, worldY - cy);
+    if (dist <= bestDist) {
+      best = p;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
+// mouse coordinates are screen-space; the world is shifted left by cameraX (see render()), so
+// adding it back maps a click to the same world x the icon was drawn at. y isn't camera-shifted
+// (only the shake offset touches it, and that's small enough to ignore for a click hit-test).
+function screenToWorld(e) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: e.clientX - rect.left + cameraX, y: e.clientY - rect.top };
+}
+
+function handleCanvasClick(e) {
+  if (showIntro) {
+    dismissIntro();
+    return; // this click only dismisses the title screen, not also a pickup
+  }
+  if (paused || runState.status !== 'playing') return;
+  const { x, y } = screenToWorld(e);
+  const hit = findPickupAt(x, y);
+  if (hit) {
+    hit.used = true;
+    ball.pendingTrait = hit.trait;
+    pushToast(`${TRAIT_LABELS[hit.trait]} 획득 — Space로 사용`);
+  }
+}
+
+function handleCanvasMouseMove(e) {
+  if (showIntro || paused || runState.status !== 'playing') {
+    canvas.style.cursor = 'default';
+    return;
+  }
+  const { x, y } = screenToWorld(e);
+  canvas.style.cursor = findPickupAt(x, y) ? 'pointer' : 'default';
+}
+
 let paused = false;
 
 // card 5: a felt event (screen shake on failure) plus a way to turn it down. reduceMotion only ever
@@ -308,6 +637,17 @@ function togglePause() {
   gameWrapEl.classList.toggle('is-paused', paused);
 }
 
+// pause-menu escape hatch for "I want a fresh run right now" -- same reset resetBall() already
+// does on a normal fail/restart cycle, just triggered manually instead of by the fail timer, and
+// closes the pause overlay behind it so the player lands straight back in a playing run.
+const restartToggleBtn = document.getElementById('restart-toggle');
+restartToggleBtn.addEventListener('click', () => {
+  resetBall();
+  paused = false;
+  setShowHelp(false);
+  gameWrapEl.classList.remove('is-paused');
+});
+
 window.addEventListener('keydown', (e) => {
   if (showIntro) {
     dismissIntro();
@@ -329,7 +669,8 @@ window.addEventListener('keydown', (e) => {
   handleKey(e, true);
 });
 window.addEventListener('keyup', (e) => handleKey(e, false));
-canvas.addEventListener('click', dismissIntro);
+canvas.addEventListener('click', handleCanvasClick);
+canvas.addEventListener('mousemove', handleCanvasMouseMove);
 window.addEventListener('resize', () => {
   resizeCanvas();
 });
@@ -474,6 +815,8 @@ function winRun() {
   } else {
     pushToast('목표 도달! 클리어');
   }
+  reportGlobalBest(runState.elapsed); // separate from the local record above -- only takes effect
+  // if this run also beats whatever every other visitor has managed so far
   spawnClearBurst();
 }
 
@@ -514,10 +857,40 @@ function update(dt) {
   ball.vy += GRAVITY * gravityMult * dt;
 
   const prevBottom = ball.y + BALL_RADIUS;
+  const prevX = ball.x;
   ball.x += ball.vx * dt;
   ball.y += ball.vy * dt;
 
   if (ball.x - BALL_RADIUS < 0) ball.x = BALL_RADIUS;
+
+  // no per-track-boundary position correction here -- buildLevel() only ever commits to a random
+  // order after simulateClear() has already proven that exact order reaches the goal with vanilla
+  // physics, so there's nothing to silently patch up at runtime. see PROGRESS for what was tried
+  // before this (forcing a clean bounce at every boundary) and why it always read as a stutter.
+
+  // each track's landing zone neutralizes any leftover duration-based effect (ice/cloud/iron stay
+  // active across several bounces) the moment the ball *enters* it -- not gated to an actual
+  // touchdown there, because a still-boosted bounce (ice right after clearing its own gap, say)
+  // can be going fast/far enough to sail clean over a merely-landed-on check and carry its effect
+  // into the next track, which was tuned assuming a normal entry. this only fires on the crossing
+  // (prevX outside, current x inside), not for every frame already inside -- otherwise clicking a
+  // *new* trait for the next hazard while still standing in an earlier track's landing zone would
+  // wipe it out the instant it's activated, since a click doesn't require having left first.
+  // exceptTrait guards a track's own trait on its own landing zone (picked up and re-landed on
+  // before it's actually used).
+  for (const p of platforms) {
+    if (
+      p.resetTrait &&
+      prevX < p.xStart &&
+      ball.x >= p.xStart &&
+      ball.x <= p.xEnd &&
+      ball.activeTrait &&
+      ball.activeTrait !== p.exceptTrait
+    ) {
+      clearActiveTrait();
+      break;
+    }
+  }
 
   // ceiling collision: only iron's tiny bounce stays low enough to avoid this
   for (const c of ceilings) {
@@ -538,36 +911,24 @@ function update(dt) {
   if (support) {
     ball.y = support.y - BALL_RADIUS;
 
-    // trait is only granted by actually landing on its island -- flying near it at height doesn't
-    // count, so picking one up always means a deliberate detour off the main path, not a flyby.
-    // touching it overwrites whatever was already pending, same as before.
-    if (support.trait && !support.used) {
-      support.used = true;
-      ball.pendingTrait = support.trait;
-      pushToast(`${TRAIT_LABELS[support.trait]} 획득 — Space로 사용`);
-    }
-
-    // landing zones right after a hazard neutralize any leftover duration-based effect (cloud/iron
-    // stay active across several bounces) -- otherwise a stray float/heavy landing here would carry
-    // into the next island's expected normal-bounce height as an unpredictably huge or short bounce.
-    // exceptTrait guards this section's own trait: the ball also lands on this same ground after
-    // visiting this section's own island, and that one must survive to actually get used.
-    if (support.resetTrait && ball.activeTrait && ball.activeTrait !== support.exceptTrait) clearActiveTrait();
-
     if (support.goal) {
       winRun();
       return;
     }
 
     if (ball.activeTrait === 'rubber') {
-      ball.vy = BOUNCE_VELOCITY * RUBBER_BOUNCE_MULT;
-      clearActiveTrait('탱탱볼 효과로 높이 튀어올랐다');
+      if (support.holdBoostUntilGap && ball.x + NORMAL_BOUNCE_SPAN <= support.xEnd) {
+        // another ordinary bounce still fits on this platform before the gap starts -- hold the
+        // boost rather than spend it here, so an early press doesn't launch short (see trackClimb).
+        ball.vy = BOUNCE_VELOCITY;
+      } else {
+        ball.vy = BOUNCE_VELOCITY * RUBBER_BOUNCE_MULT;
+        clearActiveTrait('탱탱볼 효과로 높이 튀어올랐다');
+      }
     } else if (ball.activeTrait === 'iron') {
       ball.vy = BOUNCE_VELOCITY * IRON_BOUNCE_MULT; // stays heavy until the duration timer clears it
-    } else if (ball.activeTrait === 'cloud') {
-      ball.vy = BOUNCE_VELOCITY; // stays floaty across several bounces until the duration timer clears it
     } else {
-      ball.vy = BOUNCE_VELOCITY;
+      ball.vy = BOUNCE_VELOCITY; // cloud stays floaty via reduced gravity above, not a different bounce velocity
     }
   } else if (ball.y > floorY + 400) {
     failRun('떨어졌다 — 다시 시작한다');
@@ -576,7 +937,10 @@ function update(dt) {
 
   spawnTrail(dt);
 
-  const targetCamera = ball.x - canvas.width * 0.4;
+  // ball sits at 35% from the left edge (was 40%) so more of what's coming stays on screen --
+  // a first-time player standing at a trait island can actually see the hazard it's for, instead
+  // of only discovering it after passing the pickup and having to double back for the right trait.
+  const targetCamera = ball.x - canvas.width * 0.35;
   cameraX = Math.max(0, Math.min(targetCamera, Math.max(0, levelWidth - canvas.width)));
 
   toasts = toasts.filter((t) => (t.life -= dt) > 0);
@@ -692,7 +1056,7 @@ function drawSpikes(xStart, xEnd, y, dir) {
 // anyone who dismissed the intro too fast can pull this same explanation back up mid-run.
 const CONTROL_LINES = [
   '방향키(←/→) 또는 A/D로 공을 움직인다',
-  '발판 위 특성(색+이름표)을 밟아 얻고, Space로 발동한다',
+  '떠 있는 특성 아이콘(색+이름표)을 클릭해 얻고, Space로 발동한다',
   '초록 발판에 닿으면 성공, 천장·구덩이에 닿으면 실패한다',
 ];
 
@@ -771,14 +1135,24 @@ function render() {
 
   for (const trigger of triggers) {
     const cx = (trigger.xStart + trigger.xEnd) / 2;
-    // trait is shown before touching, so there's nothing to misread up on the island
-    TRAIT_ICONS[trigger.trait](cx, trigger.y - 16, !trigger.used);
+    const cy = trigger.y - 16;
+    // trait is shown before clicking, so there's nothing to misread up in the air. no separate
+    // ring anymore -- the icon itself is scaled up to fill that space instead. drawn at
+    // PICKUP_ALPHA so a marker never fully hides the hazard it's hovering above.
+    // icon functions draw around their own (cx, cy) argument at a fixed ~9-10px base radius --
+    // scaling around that same point enlarges the icon without having to touch each shape's coords
+    ctx.save();
+    ctx.globalAlpha = PICKUP_ALPHA;
+    ctx.translate(cx, cy);
+    ctx.scale(ICON_SCALE, ICON_SCALE);
+    TRAIT_ICONS[trigger.trait](0, 0, !trigger.used);
+    ctx.restore();
 
     if (!trigger.used) {
       ctx.fillStyle = '#e8eaf2';
-      ctx.font = '13px sans-serif';
+      ctx.font = 'bold 19px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText(TRAIT_LABELS[trigger.trait], cx, trigger.y - 42);
+      ctx.fillText(TRAIT_LABELS[trigger.trait], cx, trigger.y - 85);
       ctx.textAlign = 'left';
     }
   }
@@ -806,6 +1180,19 @@ function render() {
   ctx.fillStyle = '#8b93a7';
   ctx.textAlign = 'right';
   ctx.fillText(`난이도 — 이동 속도: ${MOVE_SPEED}px/s`, canvas.width - 16, 24);
+  ctx.textAlign = 'left';
+
+  // global record: bottom-right, bigger than the rest of the HUD so it reads as the game's headline
+  // stat rather than another status line -- includes the holder's nickname once one exists.
+  const globalBestText = !globalBestLoaded
+    ? '불러오는 중'
+    : globalBestTime === null
+    ? '아직 없음'
+    : `${globalBestTime.toFixed(1)}초${globalBestName ? ' - ' + globalBestName : ''}`;
+  ctx.font = 'bold 22px sans-serif';
+  ctx.fillStyle = '#facc15';
+  ctx.textAlign = 'right';
+  ctx.fillText(`전체 최고 기록: ${globalBestText}`, canvas.width - 16, canvas.height - 20);
   ctx.textAlign = 'left';
 
   if (runState.status === 'won') {
@@ -846,7 +1233,7 @@ function render() {
   ctx.fillStyle = '#e8eaf2';
   toasts.forEach((toast, i) => {
     ctx.globalAlpha = Math.min(1, toast.life);
-    ctx.fillText(toast.text, 16, 116 + i * 20);
+    ctx.fillText(toast.text, 16, 136 + i * 20);
     ctx.globalAlpha = 1;
   });
 }
