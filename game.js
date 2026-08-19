@@ -3,7 +3,9 @@ const ctx = canvas.getContext('2d');
 
 const GRAVITY = 1800; // px/s^2
 const BOUNCE_VELOCITY = -820; // px/s, upward
-const MOVE_SPEED = 420; // px/s -- reverted; card 3's 250 conclusion rested on one fixed-skill bot policy, see PROGRESS.md 카드 3 기록
+const MOVE_SPEED = 420; // px/s -- card 3 final: kept at the original default. A slower candidate
+// (300) was tested against 4 skill tiers and cleared hazard 1 less often in every tier, not more,
+// so lowering speed doesn't help this level's actual challenge (see PROGRESS.md 카드 3 기록).
 const BALL_RADIUS = 18;
 
 // per-trait tuning: how each effect bends the base physics while active
@@ -121,9 +123,12 @@ function traitCluster(baseY, xStart, leftTrait, rightTrait) {
 }
 
 function buildLevel() {
-  // world-space layout: two laps of the same four hazards -- rubber ledge -> cloud glide ->
-  // iron tunnel -> ice pit -- the second lap one tier higher (elevatedY2), so clearing it means
-  // re-applying all four traits again rather than coasting through on lap 1's memorized inputs.
+  // world-space layout: five hazards, each trait pulling a different job so the level never
+  // repeats itself -- rubber climbs a gap by height, then ice crosses a *flat* gap by pure speed
+  // (a different skill, not another pit), then rubber launches a second time -- not to climb, but
+  // to fuel a mid-air switch into cloud for a long glide -- then iron squeezes through a tunnel,
+  // and finally ice returns one more time for the pit it was built for. rubber and ice each do two
+  // different jobs; no section is a reskin of an earlier one.
   // the ground path is one continuous, unbroken route -- nothing about picking up a trait
   // interrupts forward progress. each cluster's islands sit a full tier above what any path-launched
   // hop can reach (see ISLAND_HEIGHT above), so grabbing a trait always means physically climbing
@@ -131,59 +136,47 @@ function buildLevel() {
   // matter how a run happens to be timed. the correct trait always sits on the right island.
   platforms = [
     { xStart: 0, xEnd: 850, y: floorY }, // start
-    ...traitCluster(floorY, 100, 'iron', 'rubber'), // decoy: iron (left island, kills the boost) / correct: rubber (right island, clears the gap ahead)
+    ...traitCluster(floorY, 100, 'iron', 'rubber'), // decoy: iron (kills the boost) / correct: rubber (climbs the gap ahead)
+    // gap: 850 to 1150, +260px climb -- only a rubber-boosted bounce covers both the height and the distance.
 
-    { xStart: 1150, xEnd: 2150, y: elevatedY, resetTrait: true, exceptTrait: 'cloud' }, // ledge reached via rubber boost
-    ...traitCluster(elevatedY, 1305, 'rubber', 'cloud'), // decoy: rubber (extra height, not glide distance) / correct: cloud (glide)
+    { xStart: 1150, xEnd: 2900, y: elevatedY, resetTrait: true, exceptTrait: 'ice' }, // ledge reached via rubber boost -- wide enough that the arc launched straight off the island (elevated, so it carries much further than a flat-ground hop) always lands back on solid ground here, giving ice a flat-height bounce or two to actually show its speed before the gap, instead of the island's own launch height doing most of the work regardless of trait
+    ...traitCluster(elevatedY, 1305, 'iron', 'ice'), // decoy: iron (barely moves at all) / correct: ice (raw speed, no height needed here)
+    // flat gap starts at 2900 -- same height on both sides, so this is a pure-speed test, not
+    // another climb. sized relative to a flat-ground no-trait hop's own range so plain movement and
+    // the iron decoy both fall well short; only a flat-ground ice-charged hop clears it. (exact width
+    // depends on MOVE_SPEED, which is still being tuned -- placeholder pending a final value.)
 
-    { xStart: 2450, xEnd: 3650, y: elevatedY, resetTrait: true, exceptTrait: 'iron' }, // landing after the wide glide -- also clears leftover cloud float (widened left edge: the glide's actual fall crosses back down to elevatedY around x=2536, before the platform used to start at 2650)
-    ...traitCluster(elevatedY, 3082, 'cloud', 'iron'), // decoy: cloud (still too tall for the tunnel) / correct: iron (low tunnel)
+    { xStart: 3500, xEnd: 4500, y: elevatedY, resetTrait: true, exceptTrait: 'rubber' }, // landing after the speed gap -- clears leftover ice slide, but spares rubber (this section's own trait, picked up and re-landed on before it boosts)
+    ...traitCluster(elevatedY, 3900, 'ice', 'rubber'), // decoy: ice (fast, but no height) / correct: rubber -- this time not to climb directly, but to fuel the mid-air switch below
 
-    { xStart: 3650, xEnd: 3990, y: elevatedY, ceiling: true }, // low tunnel: only iron's tiny bounce fits
+    // the mid-air trait swap: the rubber boost (launched from wherever the carrier bounce lands)
+    // arcs up to ~540px above launch -- this island sits at 400px, comfortably inside that arc but
+    // far above anything a normal or even a step-to-island hop could ever reach, so landing here is
+    // only possible while riding that specific boosted arc. touching it grants cloud; the player
+    // then has to activate it immediately (while still ascending off this island) to convert the
+    // rest of the flight into a long glide -- the only way across the wide gap that follows. no
+    // decoy: the challenge is steering into a fast-moving target mid-arc, not a right/wrong pick;
+    // missing it just means falling through the gap ahead, same as any other missed hazard.
+    { xStart: 5045, xEnd: 5125, y: elevatedY - 400, trait: 'cloud', used: false }, // sky island, 400px above the elevatedY carrier ground
 
-    { xStart: 3990, xEnd: 5300, y: elevatedY, resetTrait: true, exceptTrait: 'ice' }, // after tunnel + ice runway -- also clears leftover heavy iron
-    ...traitCluster(elevatedY, 4048, 'rubber', 'ice'), // decoy: rubber (height, not the speed needed to clear the pit) / correct: ice (speed)
-    // no platform from 5300 to 5700: a real pit, spikes at the bottom (see pits).
+    { xStart: 5500, xEnd: 6500, y: elevatedY2, resetTrait: true, exceptTrait: 'iron' }, // landing after the sky-glide -- wide, since the glide comes down fast and its exact landing spot varies with reaction timing
+    ...traitCluster(elevatedY2, 5870, 'cloud', 'iron'), // decoy: cloud (already spent, and still too tall for the tunnel anyway) / correct: iron (low tunnel)
+
+    { xStart: 6500, xEnd: 6840, y: elevatedY2, ceiling: true }, // low tunnel: only iron's tiny bounce fits
+
+    { xStart: 6840, xEnd: 8150, y: elevatedY2, resetTrait: true, exceptTrait: 'ice' }, // after tunnel + ice runway -- also clears leftover heavy iron
+    ...traitCluster(elevatedY2, 6898, 'rubber', 'ice'), // decoy: rubber (height, not the speed needed to clear the pit) / correct: ice -- back to what it was first shown for, a real pit
+    // no platform from 8150 to 8550: a real pit, spikes at the bottom (see pits).
     // normal/other bounces fall short and drop in; only ice's speed clears it.
 
-    { xStart: 5700, xEnd: 6800, y: elevatedY, resetTrait: true, exceptTrait: 'rubber' }, // checkpoint after the first pit -- clears leftover ice slide, but must spare rubber (this section's own trait, picked up and re-landed on before it boosts). wide enough that the unboosted carrier bounce launched from the island always lands back on solid ground before the boost can apply on its *next* touchdown.
-    ...traitCluster(elevatedY, 6100, 'iron', 'rubber'), // decoy: iron / correct: rubber (climbs to the next tier)
-
-    // the mid-air trait swap: the rubber boost (launched from wherever the carrier bounce lands,
-    // ~x=6517 at the current MOVE_SPEED) arcs up to ~540px above launch -- this island sits at
-    // 400px, comfortably inside that arc but far above anything a normal or even a step-to-island
-    // hop could ever reach, so landing here is only possible while riding that specific boosted arc.
-    // touching it grants cloud; the player then has to activate it immediately (while still
-    // ascending off this island) to convert the rest of the flight into a long glide -- the only way
-    // across the wide gap that follows. no decoy: the challenge is steering into a fast-moving
-    // target mid-arc, not a right/wrong pick; missing it just means falling through the gap ahead,
-    // same as any other missed hazard. (position depends on MOVE_SPEED -- the arc's height doesn't
-    // change with it, but how far horizontally it travels to reach a given height does.)
-    { xStart: 6640, xEnd: 6720, y: elevatedY - 400, trait: 'cloud', used: false }, // sky island, 400px above the elevatedY carrier ground
-
-    { xStart: 7100, xEnd: 7900, y: elevatedY2, resetTrait: true, exceptTrait: 'iron' }, // landing after the sky-glide -- shortened to match MOVE_SPEED's current value (the glide's horizontal reach scales directly with it); wide, since the glide comes down fast and its exact landing spot varies with reaction timing
-    ...traitCluster(elevatedY2, 7500, 'cloud', 'iron'), // decoy: cloud (already spent, and still too tall for the tunnel anyway) / correct: iron (low tunnel)
-    // tunnel kept close behind the island -- IRON_DURATION*MOVE_SPEED is the hard budget from
-    // pickup to tunnel exit, and MOVE_SPEED's current value shrinks that budget too, so this gap
-    // also had to come in tighter than before to leave heavy-bounce time to spare inside the tunnel.
-
-    { xStart: 7900, xEnd: 8240, y: elevatedY2, ceiling: true }, // low tunnel: only iron's tiny bounce fits
-
-    { xStart: 8240, xEnd: 9550, y: elevatedY2, resetTrait: true, exceptTrait: 'ice' }, // after tunnel + ice runway -- also clears leftover heavy iron
-    ...traitCluster(elevatedY2, 8300, 'rubber', 'ice'), // decoy: rubber (height, not the speed needed to clear the pit) / correct: ice (speed)
-    // no platform from 9550 to 9950: a second real pit, spikes at the bottom (see pits).
-
-    { xStart: 9950, xEnd: 10950, y: elevatedY2, goal: true }, // goal — wide, since ice's speed can carry the landing far past the pit
+    { xStart: 8550, xEnd: 9550, y: elevatedY2, goal: true }, // goal — wide, since ice's speed can carry the landing far past the pit
   ];
 
   ceilings = platforms
     .filter((p) => p.ceiling)
     .map((p) => ({ xStart: p.xStart, xEnd: p.xEnd, y: p.y - 100 }));
 
-  pits = [
-    { xStart: 5300, xEnd: 5700, y: elevatedY + 140 },
-    { xStart: 9550, xEnd: 9950, y: elevatedY2 + 140 },
-  ];
+  pits = [{ xStart: 8150, xEnd: 8550, y: elevatedY2 + 140 }];
 
   // trait is shown before touching (color + label, see render()). it's granted only on an actual
   // landing on the platform (see update()), not by flying near it, so grabbing it always means a
