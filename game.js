@@ -708,7 +708,7 @@ function drawIntro() {
   ctx.textAlign = 'center';
   ctx.fillStyle = '#4ade80';
   ctx.font = 'bold 26px sans-serif';
-  ctx.fillText('바운스볼 트리거 퍼즐', cx, cy - 90);
+  ctx.fillText('트리거 공 게임', cx, cy - 90);
 
   ctx.fillStyle = '#e8eaf2';
   ctx.font = '16px sans-serif';
