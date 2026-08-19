@@ -274,10 +274,26 @@ motionToggleBtn.addEventListener('click', () => {
   motionToggleBtn.setAttribute('aria-pressed', String(reduceMotion));
 });
 
+// re-shows the intro screen's controls/rules text from inside the pause menu, for anyone who
+// dismissed it too fast at the start and wants another look mid-run without losing their run.
+let showHelp = false;
+const gameWrapEl = document.getElementById('game-wrap');
+const helpToggleBtn = document.getElementById('help-toggle');
+const helpCloseBtn = document.getElementById('help-close');
+
+function setShowHelp(next) {
+  showHelp = next;
+  gameWrapEl.classList.toggle('is-help', showHelp);
+}
+
+helpToggleBtn.addEventListener('click', () => setShowHelp(true));
+helpCloseBtn.addEventListener('click', () => setShowHelp(false));
+
 function togglePause() {
   paused = !paused;
+  if (!paused) setShowHelp(false); // never leave the help screen showing over an unpaused game
   pushToast(paused ? '일시정지 — Esc로 재개' : '재개');
-  document.getElementById('game-wrap').classList.toggle('is-paused', paused);
+  gameWrapEl.classList.toggle('is-paused', paused);
 }
 
 window.addEventListener('keydown', (e) => {
@@ -287,8 +303,12 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'Escape' && !e.repeat) {
     e.preventDefault();
-    togglePause();
-    return; // pausing/resuming is the only thing this keypress should do
+    if (showHelp) {
+      setShowHelp(false); // step back to the plain pause menu, not straight to resuming play
+    } else {
+      togglePause();
+    }
+    return; // pausing/resuming/closing help is the only thing this keypress should do
   }
   if (e.code === 'Space' && !e.repeat) {
     e.preventDefault();
@@ -476,6 +496,14 @@ function drawSpikes(xStart, xEnd, y, dir) {
   }
 }
 
+// shared with the pause menu's "게임 설명 보기" so both places show the same rules text --
+// anyone who dismissed the intro too fast can pull this same explanation back up mid-run.
+const CONTROL_LINES = [
+  '방향키(←/→) 또는 A/D로 공을 움직인다',
+  '발판 위 특성(색+이름표)을 밟아 얻고, Space로 발동한다',
+  '초록 발판에 닿으면 성공, 천장·구덩이에 닿으면 실패한다',
+];
+
 function drawIntro() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = '#232837';
@@ -483,13 +511,7 @@ function drawIntro() {
 
   const cx = canvas.width / 2;
   const cy = canvas.height / 2;
-  const lines = [
-    '방향키(←/→) 또는 A/D로 공을 움직인다',
-    '발판 위 특성(색+이름표)을 밟아 얻고, Space로 발동한다',
-    '초록 발판에 닿으면 성공, 천장·구덩이에 닿으면 실패한다',
-    '',
-    '아무 키나 누르거나 화면을 클릭하면 시작',
-  ];
+  const lines = [...CONTROL_LINES, '', '아무 키나 누르거나 화면을 클릭하면 시작'];
 
   ctx.textAlign = 'center';
   ctx.fillStyle = '#4ade80';
@@ -621,12 +643,22 @@ function render() {
     ctx.fillStyle = 'rgba(15, 17, 25, 0.6)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.textAlign = 'center';
-    ctx.font = 'bold 28px sans-serif';
-    ctx.fillStyle = '#e8eaf2';
-    ctx.fillText('일시정지', canvas.width / 2, canvas.height / 2 - 12);
-    ctx.font = '15px sans-serif';
-    ctx.fillStyle = '#8b93a7';
-    ctx.fillText('Esc를 누르면 재개', canvas.width / 2, canvas.height / 2 + 18);
+
+    if (showHelp) {
+      ctx.font = 'bold 22px sans-serif';
+      ctx.fillStyle = '#4ade80';
+      ctx.fillText('게임 설명', canvas.width / 2, canvas.height / 2 - 70);
+      ctx.font = '16px sans-serif';
+      ctx.fillStyle = '#e8eaf2';
+      CONTROL_LINES.forEach((line, i) => ctx.fillText(line, canvas.width / 2, canvas.height / 2 - 24 + i * 28));
+    } else {
+      ctx.font = 'bold 28px sans-serif';
+      ctx.fillStyle = '#e8eaf2';
+      ctx.fillText('일시정지', canvas.width / 2, canvas.height / 2 - 12);
+      ctx.font = '15px sans-serif';
+      ctx.fillStyle = '#8b93a7';
+      ctx.fillText('Esc를 누르면 재개', canvas.width / 2, canvas.height / 2 + 18);
+    }
     ctx.textAlign = 'left';
   }
 

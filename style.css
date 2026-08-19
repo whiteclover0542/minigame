@@ -31,12 +31,25 @@ html, body {
    click hit-testing while hidden, not just visually. centered under the "일시정지 / Esc를 누르면
    재개" text (drawn on canvas at height/2 -12 and +18) so it reads as part of that same message
    instead of a corner control easy to miss. */
-#motion-toggle {
+#pause-menu {
   display: none;
   position: absolute;
   left: 50%;
   top: 50%;
   transform: translate(-50%, 46px);
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  z-index: 1;
+}
+
+#game-wrap.is-paused:not(.is-help) #pause-menu {
+  display: flex;
+}
+
+#motion-toggle,
+#help-toggle,
+#help-close {
   padding: 10px 16px;
   font-size: 15px;
   font-family: sans-serif;
@@ -45,11 +58,12 @@ html, body {
   border: 1px solid #454b60;
   border-radius: 6px;
   cursor: pointer;
-  z-index: 1;
   box-shadow: 0 0 0 3px rgba(232, 234, 242, 0.35), 0 4px 16px rgba(0, 0, 0, 0.5);
 }
 
-#motion-toggle:hover {
+#motion-toggle:hover,
+#help-toggle:hover,
+#help-close:hover {
   background: #3a4059;
 }
 
@@ -59,6 +73,17 @@ html, body {
   border-color: #4ade80;
 }
 
-#game-wrap.is-paused #motion-toggle {
+/* the "닫기" button only appears while the help text (see drawPauseHelp() in game.js) covers the
+   pause menu -- closing it goes back to the plain pause screen, not straight to resuming play. */
+#help-close {
+  display: none;
+  position: absolute;
+  left: 50%;
+  bottom: 60px;
+  transform: translateX(-50%);
+  z-index: 1;
+}
+
+#game-wrap.is-help #help-close {
   display: block;
 }
