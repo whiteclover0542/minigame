@@ -35,6 +35,15 @@ const TRAIT_COLORS = {
 };
 const BALL_COLOR = '#38bdf8';
 
+// per-trait trail look: purely cosmetic (spawnTrail/spawnClearBurst below are gated by reduceMotion
+// the same way card 5's screen shake is), so tuning these never touches physics or collision.
+const TRAIL_CONFIG = {
+  cloud: { interval: 0.03, color: '#ffffff', size: [4, 7], life: 0.9, vx: [-20, 20], vy: [-40, -10], drag: 0.4, shape: 'circle' },
+  rubber: { interval: 0.02, color: '#fb7185', size: [3, 5], life: 0.35, vx: [-30, 30], vy: [-30, 30], drag: 2, shape: 'circle' },
+  iron: { interval: 0.02, color: '#9ca3af', size: [2, 4], life: 0.4, vx: [-15, 15], vy: [20, 80], drag: 1, shape: 'spark' },
+  ice: { interval: 0.015, color: '#a5f3fc', size: [3, 6], life: 0.3, vx: [-10, 10], vy: [-10, 10], drag: 3, shape: 'shard' },
+};
+
 const ball = {
   x: 0,
   y: 0,
@@ -60,6 +69,8 @@ let ceilings = [];
 let pits = [];
 let triggers = [];
 let toasts = []; // { text, life }
+let particles = []; // { x, y, vx, vy, life, maxLife, color, size, shape, drag }
+let trailSpawnTimer = 0;
 let levelWidth = 0;
 let cameraX = 0;
 let startPoint = { x: 0, y: 0 };
@@ -226,6 +237,7 @@ function resetBall() {
   ball.activeTrait = null;
   ball.effectTimer = 0;
   toasts = [];
+  particles = [];
   runState.status = 'playing';
   runState.timer = 0;
   runState.elapsed = 0;
@@ -338,6 +350,95 @@ function pushToast(text) {
   toasts.push({ text, life: 3.5 });
 }
 
+function rand(min, max) {
+  return min + Math.random() * (max - min);
+}
+
+// trail behind the ball, styled per active trait -- reads as an extra cue for which effect is
+// live, on top of the HUD text. reduceMotion gates spawning only (same as the shake in card 5):
+// particles already in flight still finish fading instead of vanishing abruptly on toggle.
+function spawnTrail(dt) {
+  if (reduceMotion || !ball.activeTrait) return;
+  const cfg = TRAIL_CONFIG[ball.activeTrait];
+  trailSpawnTimer -= dt;
+  while (trailSpawnTimer <= 0) {
+    trailSpawnTimer += cfg.interval;
+    particles.push({
+      x: ball.x + rand(-6, 6),
+      y: ball.y + rand(-6, 6),
+      vx: rand(cfg.vx[0], cfg.vx[1]) - ball.vx * 0.15, // slight pull opposite the ball's own motion so it reads as being left behind, not carried along
+      vy: rand(cfg.vy[0], cfg.vy[1]),
+      life: cfg.life,
+      maxLife: cfg.life,
+      color: cfg.color,
+      size: rand(cfg.size[0], cfg.size[1]),
+      shape: cfg.shape,
+      drag: cfg.drag,
+    });
+  }
+}
+
+// clear-time payoff: a burst radiating from the goal landing spot. cosmetic only -- winRun()'s
+// record check/save above it is unaffected either way.
+function spawnClearBurst() {
+  if (reduceMotion) return;
+  const count = 28;
+  for (let i = 0; i < count; i++) {
+    const angle = (Math.PI * 2 * i) / count + rand(-0.15, 0.15);
+    const speed = rand(120, 260);
+    particles.push({
+      x: ball.x,
+      y: ball.y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: rand(0.5, 0.9),
+      maxLife: 0.9,
+      color: '#4ade80',
+      size: rand(3, 6),
+      shape: 'circle',
+      drag: 1.5,
+    });
+  }
+}
+
+function updateParticles(dt) {
+  if (!particles.length) return;
+  for (const p of particles) {
+    p.life -= dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    const dragMult = Math.max(0, 1 - p.drag * dt);
+    p.vx *= dragMult;
+    p.vy *= dragMult;
+  }
+  particles = particles.filter((p) => p.life > 0);
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    const t = Math.max(0, p.life / p.maxLife);
+    const s = p.size * (0.5 + 0.5 * t);
+    ctx.globalAlpha = t;
+    ctx.fillStyle = p.color;
+    if (p.shape === 'shard') {
+      // elongated sliver oriented along its own velocity -- reads as ice speed, not generic dust
+      const angle = Math.atan2(p.vy, p.vx);
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(angle);
+      ctx.fillRect(-s * 1.6, -s * 0.4, s * 3.2, s * 0.8);
+      ctx.restore();
+    } else if (p.shape === 'spark') {
+      ctx.fillRect(p.x - s / 2, p.y - s / 2, s, s);
+    } else {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, s, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
 function getSupportPlatform(x, prevBottom, nextBottom) {
   // topmost platform under this x that the ball is actually crossing into this frame (prevBottom
   // was still above it, nextBottom has reached or passed it). picking the topmost platform at this
@@ -373,6 +474,7 @@ function winRun() {
   } else {
     pushToast('목표 도달! 클리어');
   }
+  spawnClearBurst();
 }
 
 function update(dt) {
@@ -380,6 +482,7 @@ function update(dt) {
   if (paused) return; // fully frozen -- no physics, no toast countdown, no win/lose auto-restart timer
 
   if (shakeTimer > 0) shakeTimer = Math.max(0, shakeTimer - dt);
+  updateParticles(dt); // keeps animating through the win/lose freeze window too, same as shakeTimer above
 
   if (runState.status !== 'playing') {
     runState.timer -= dt;
@@ -471,11 +574,100 @@ function update(dt) {
     return;
   }
 
+  spawnTrail(dt);
+
   const targetCamera = ball.x - canvas.width * 0.4;
   cameraX = Math.max(0, Math.min(targetCamera, Math.max(0, levelWidth - canvas.width)));
 
   toasts = toasts.filter((t) => (t.life -= dt) > 0);
 }
+
+// trigger icons: one shape per trait, not just a recolored diamond, so an island reads as its
+// trait even before the label text is legible. `filled` is false for an already-used island --
+// same silhouette, drawn as a faint outline only, so it still reads as "this was a cloud spot".
+function drawCloudIcon(cx, cy, filled) {
+  const puffs = [
+    { dx: 0, dy: -4, r: 8 },
+    { dx: -8, dy: 2, r: 6 },
+    { dx: 8, dy: 2, r: 6 },
+    { dx: 0, dy: 4, r: 7 },
+  ];
+  ctx.lineWidth = filled ? 1.5 : 2;
+  ctx.strokeStyle = filled ? '#c7d2e0' : '#3a4059';
+  for (const p of puffs) {
+    ctx.beginPath();
+    ctx.arc(cx + p.dx, cy + p.dy, p.r, 0, Math.PI * 2);
+    if (filled) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+    }
+    ctx.stroke();
+  }
+}
+
+function drawRubberIcon(cx, cy, filled) {
+  ctx.beginPath();
+  ctx.arc(cx, cy, 9, 0, Math.PI * 2);
+  if (filled) {
+    ctx.fillStyle = '#fb7185';
+    ctx.fill();
+  }
+  ctx.strokeStyle = filled ? '#7f1d3a' : '#3a4059';
+  ctx.lineWidth = filled ? 1.5 : 2;
+  ctx.stroke();
+  if (filled) {
+    // shine highlight -- sells "bouncy rubber ball" over a flat disc
+    ctx.beginPath();
+    ctx.ellipse(cx - 3, cy - 3, 3, 2, -0.6, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+    ctx.fill();
+  }
+}
+
+function drawIronIcon(cx, cy, filled) {
+  ctx.beginPath();
+  ctx.arc(cx, cy, 9, 0, Math.PI * 2);
+  if (filled) {
+    const grad = ctx.createRadialGradient(cx - 3, cy - 3, 1, cx, cy, 10);
+    grad.addColorStop(0, '#d1d5db');
+    grad.addColorStop(0.55, '#6b7280');
+    grad.addColorStop(1, '#374151');
+    ctx.fillStyle = grad; // metallic sphere shading, not a flat gray disc
+    ctx.fill();
+  }
+  ctx.strokeStyle = filled ? '#1f2430' : '#3a4059';
+  ctx.lineWidth = filled ? 1.5 : 2;
+  ctx.stroke();
+}
+
+function drawIceIcon(cx, cy, filled) {
+  const pts = [
+    [0, -10],
+    [7, -3],
+    [5, 8],
+    [-5, 8],
+    [-7, -3],
+  ];
+  ctx.beginPath();
+  pts.forEach(([dx, dy], i) => (i === 0 ? ctx.moveTo(cx + dx, cy + dy) : ctx.lineTo(cx + dx, cy + dy)));
+  ctx.closePath();
+  if (filled) {
+    ctx.fillStyle = '#a5f3fc';
+    ctx.fill();
+  }
+  ctx.strokeStyle = filled ? '#0e7490' : '#3a4059';
+  ctx.lineWidth = filled ? 1.5 : 2;
+  ctx.stroke();
+  if (filled) {
+    // one facet line down the middle -- reads as a cut crystal, not a plain pentagon
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - 10);
+    ctx.lineTo(cx, cy + 8);
+    ctx.stroke();
+  }
+}
+
+const TRAIT_ICONS = { cloud: drawCloudIcon, rubber: drawRubberIcon, iron: drawIronIcon, ice: drawIceIcon };
 
 function drawSpikes(xStart, xEnd, y, dir) {
   // dir: -1 = spikes point up (floor hazard), 1 = spikes point down (ceiling hazard)
@@ -579,22 +771,8 @@ function render() {
 
   for (const trigger of triggers) {
     const cx = (trigger.xStart + trigger.xEnd) / 2;
-    ctx.save();
-    ctx.translate(cx, trigger.y - 16);
-    ctx.rotate(Math.PI / 4);
-    if (trigger.used) {
-      ctx.strokeStyle = '#3a4059';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(-10, -10, 20, 20);
-    } else {
-      // trait is shown before touching, so there's nothing to misread up on the island
-      ctx.fillStyle = TRAIT_COLORS[trigger.trait];
-      ctx.strokeStyle = '#1c1f2e';
-      ctx.lineWidth = 2;
-      ctx.fillRect(-10, -10, 20, 20);
-      ctx.strokeRect(-10, -10, 20, 20);
-    }
-    ctx.restore();
+    // trait is shown before touching, so there's nothing to misread up on the island
+    TRAIT_ICONS[trigger.trait](cx, trigger.y - 16, !trigger.used);
 
     if (!trigger.used) {
       ctx.fillStyle = '#e8eaf2';
@@ -604,6 +782,8 @@ function render() {
       ctx.textAlign = 'left';
     }
   }
+
+  drawParticles();
 
   ctx.fillStyle = TRAIT_COLORS[ball.activeTrait || ball.pendingTrait] || BALL_COLOR;
   ctx.beginPath();
