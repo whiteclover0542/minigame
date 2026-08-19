@@ -28,14 +28,17 @@ html, body {
 
 /* hidden outside of pause -- only shown while paused (see #game-wrap.is-paused below) so it doesn't
    sit on screen as HUD clutter during normal play. display:none also drops it from tab order and
-   click hit-testing while hidden, not just visually. */
+   click hit-testing while hidden, not just visually. centered under the "일시정지 / Esc를 누르면
+   재개" text (drawn on canvas at height/2 -12 and +18) so it reads as part of that same message
+   instead of a corner control easy to miss. */
 #motion-toggle {
   display: none;
   position: absolute;
-  right: 16px;
-  bottom: 16px;
-  padding: 8px 12px;
-  font-size: 13px;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, 46px);
+  padding: 10px 16px;
+  font-size: 15px;
   font-family: sans-serif;
   color: #e8eaf2;
   background: #2f3444;
