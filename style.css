@@ -26,7 +26,11 @@ html, body {
   touch-action: none;
 }
 
+/* hidden outside of pause -- only shown while paused (see #game-wrap.is-paused below) so it doesn't
+   sit on screen as HUD clutter during normal play. display:none also drops it from tab order and
+   click hit-testing while hidden, not just visually. */
 #motion-toggle {
+  display: none;
   position: absolute;
   right: 16px;
   bottom: 16px;
@@ -39,7 +43,7 @@ html, body {
   border-radius: 6px;
   cursor: pointer;
   z-index: 1;
-  transition: transform 0.15s, box-shadow 0.15s;
+  box-shadow: 0 0 0 3px rgba(232, 234, 242, 0.35), 0 4px 16px rgba(0, 0, 0, 0.5);
 }
 
 #motion-toggle:hover {
@@ -52,11 +56,6 @@ html, body {
   border-color: #4ade80;
 }
 
-/* the in-canvas pause overlay dims everything it draws, but this button is a separate DOM element
-   sitting on top of the canvas -- without this it stays readable but easy to miss against the dim.
-   while paused it's worth surfacing clearly, since pausing to go fiddle with settings is exactly
-   when a player reaches for it. */
 #game-wrap.is-paused #motion-toggle {
-  transform: scale(1.12);
-  box-shadow: 0 0 0 3px rgba(232, 234, 242, 0.35), 0 4px 16px rgba(0, 0, 0, 0.5);
+  display: block;
 }
