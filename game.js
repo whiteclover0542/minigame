@@ -256,14 +256,26 @@ function dismissIntro() {
   if (showIntro) showIntro = false;
 }
 
+let paused = false;
+
+function togglePause() {
+  paused = !paused;
+  pushToast(paused ? '일시정지 — Esc로 재개' : '재개');
+}
+
 window.addEventListener('keydown', (e) => {
   if (showIntro) {
     dismissIntro();
     return; // this keypress only dismisses the title screen, not also a game action
   }
+  if (e.code === 'Escape' && !e.repeat) {
+    e.preventDefault();
+    togglePause();
+    return; // pausing/resuming is the only thing this keypress should do
+  }
   if (e.code === 'Space' && !e.repeat) {
     e.preventDefault();
-    if (runState.status === 'playing') useTrait();
+    if (runState.status === 'playing' && !paused) useTrait();
   }
   handleKey(e, true);
 });
@@ -327,6 +339,7 @@ function winRun() {
 
 function update(dt) {
   if (showIntro) return; // nothing moves until the player dismisses the title screen
+  if (paused) return; // fully frozen -- no physics, no toast countdown, no win/lose auto-restart timer
 
   if (runState.status !== 'playing') {
     runState.timer -= dt;
@@ -571,6 +584,20 @@ function render() {
     ctx.font = 'bold 28px sans-serif';
     ctx.fillStyle = '#ef4444';
     ctx.fillText('실패', canvas.width / 2 - 30, canvas.height / 2);
+  }
+
+  if (paused) {
+    // dims everything underneath so it reads as "frozen", not just another HUD line
+    ctx.fillStyle = 'rgba(15, 17, 25, 0.6)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 28px sans-serif';
+    ctx.fillStyle = '#e8eaf2';
+    ctx.fillText('일시정지', canvas.width / 2, canvas.height / 2 - 12);
+    ctx.font = '15px sans-serif';
+    ctx.fillStyle = '#8b93a7';
+    ctx.fillText('Esc를 누르면 재개', canvas.width / 2, canvas.height / 2 + 18);
+    ctx.textAlign = 'left';
   }
 
   ctx.font = '14px sans-serif';
