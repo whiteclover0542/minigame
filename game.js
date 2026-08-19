@@ -65,6 +65,32 @@ let cameraX = 0;
 let startPoint = { x: 0, y: 0 };
 let showIntro = true; // frozen title screen shown once before the first run starts
 
+// card 4: bestClearTime survives across runs and reloads (localStorage); everything else in
+// runState/ball is per-run and always wiped by resetBall(). loadBest() never throws -- a missing,
+// empty, or corrupted save is treated the same as "no record yet" so a bad save can't break startup.
+const SAVE_KEY = 'bounceball_save_v1';
+let bestClearTime = loadBest();
+
+function loadBest() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return null; // no save yet -- default
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.bestClearTime !== 'number' || !Number.isFinite(parsed.bestClearTime)) return null; // wrong shape -- default
+    return parsed.bestClearTime;
+  } catch {
+    return null; // not valid JSON at all -- default
+  }
+}
+
+function saveBest() {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({ bestClearTime }));
+  } catch {
+    // storage unavailable/full -- the run itself doesn't depend on this succeeding
+  }
+}
+
 function resizeCanvas() {
   const wrap = document.getElementById('game-wrap');
   const prevFloorY = floorY;
@@ -141,13 +167,15 @@ function buildLevel() {
 
     { xStart: 1150, xEnd: 2900, y: elevatedY, resetTrait: true, exceptTrait: 'ice' }, // ledge reached via rubber boost -- wide enough that the arc launched straight off the island (elevated, so it carries much further than a flat-ground hop) always lands back on solid ground here, giving ice a flat-height bounce or two to actually show its speed before the gap, instead of the island's own launch height doing most of the work regardless of trait
     ...traitCluster(elevatedY, 1305, 'iron', 'ice'), // decoy: iron (barely moves at all) / correct: ice (raw speed, no height needed here)
-    // flat gap starts at 2900 -- same height on both sides, so this is a pure-speed test, not
-    // another climb. sized relative to a flat-ground no-trait hop's own range so plain movement and
-    // the iron decoy both fall well short; only a flat-ground ice-charged hop clears it. (exact width
-    // depends on MOVE_SPEED, which is still being tuned -- placeholder pending a final value.)
+    // flat gap: 2900 to 3120 -- same height on both sides, so this is a pure-speed test, not
+    // another climb. measured against the real approach path (step -> island -> carrier flight):
+    // with ice activated promptly, that flight doesn't come back down to elevatedY until ~x=3200;
+    // picking up ice but never pressing Space (or the iron decoy, which barely moves) comes down by
+    // ~x=3064. 3120 sits inside that ~136px window, biased toward the ice side so a player who does
+    // everything right isn't the one left with the thin margin.
 
-    { xStart: 3500, xEnd: 4500, y: elevatedY, resetTrait: true, exceptTrait: 'rubber' }, // landing after the speed gap -- clears leftover ice slide, but spares rubber (this section's own trait, picked up and re-landed on before it boosts)
-    ...traitCluster(elevatedY, 3900, 'ice', 'rubber'), // decoy: ice (fast, but no height) / correct: rubber -- this time not to climb directly, but to fuel the mid-air switch below
+    { xStart: 3120, xEnd: 4300, y: elevatedY, resetTrait: true, exceptTrait: 'rubber' }, // landing after the speed gap -- clears leftover ice slide, but spares rubber (this section's own trait, picked up and re-landed on before it boosts). wide enough that the unboosted carrier bounce launched from the island (which needs extra fall distance to reach this flat ledge from the island's height, so it travels further than a same-height hop would) actually lands back on solid ground before the boost can apply on its *next* touchdown.
+    ...traitCluster(elevatedY, 3520, 'ice', 'rubber'), // decoy: ice (fast, but no height) / correct: rubber -- this time not to climb directly, but to fuel the mid-air switch below
 
     // the mid-air trait swap: the rubber boost (launched from wherever the carrier bounce lands)
     // arcs up to ~540px above launch -- this island sits at 400px, comfortably inside that arc but
@@ -157,26 +185,26 @@ function buildLevel() {
     // rest of the flight into a long glide -- the only way across the wide gap that follows. no
     // decoy: the challenge is steering into a fast-moving target mid-arc, not a right/wrong pick;
     // missing it just means falling through the gap ahead, same as any other missed hazard.
-    { xStart: 5045, xEnd: 5125, y: elevatedY - 400, trait: 'cloud', used: false }, // sky island, 400px above the elevatedY carrier ground
+    { xStart: 4350, xEnd: 4430, y: elevatedY - 400, trait: 'cloud', used: false }, // sky island, 400px above the elevatedY carrier ground
 
-    { xStart: 5500, xEnd: 6500, y: elevatedY2, resetTrait: true, exceptTrait: 'iron' }, // landing after the sky-glide -- wide, since the glide comes down fast and its exact landing spot varies with reaction timing
-    ...traitCluster(elevatedY2, 5870, 'cloud', 'iron'), // decoy: cloud (already spent, and still too tall for the tunnel anyway) / correct: iron (low tunnel)
+    { xStart: 4600, xEnd: 5950, y: elevatedY2, resetTrait: true, exceptTrait: 'iron' }, // landing after the sky-glide. pressing Space for cloud is time-sensitive by nature (it only bends the *current* arc if it's still ascending -- a real player's reaction time (measured against actual keypress-to-effect delay, not an idealized instant press) easily eats into that window enough to land 400-800px short of where an instant press would). rather than gate survival on reflexes, this starts right after the sky island: even a late press, or no press at all, still glides or falls onto solid ground here -- the real test stays reaching the sky island itself (steering into a fast-moving target mid-arc); skipping it outright still sends the unredirected boost arc sailing far past this ledge into open air.
+    ...traitCluster(elevatedY2, 5400, 'cloud', 'iron'), // decoy: cloud (already spent, and still too tall for the tunnel anyway) / correct: iron (low tunnel)
 
-    { xStart: 6500, xEnd: 6840, y: elevatedY2, ceiling: true }, // low tunnel: only iron's tiny bounce fits
+    { xStart: 5950, xEnd: 6290, y: elevatedY2, ceiling: true }, // low tunnel: only iron's tiny bounce fits
 
-    { xStart: 6840, xEnd: 8150, y: elevatedY2, resetTrait: true, exceptTrait: 'ice' }, // after tunnel + ice runway -- also clears leftover heavy iron
-    ...traitCluster(elevatedY2, 6898, 'rubber', 'ice'), // decoy: rubber (height, not the speed needed to clear the pit) / correct: ice -- back to what it was first shown for, a real pit
-    // no platform from 8150 to 8550: a real pit, spikes at the bottom (see pits).
+    { xStart: 6290, xEnd: 6940, y: elevatedY2, resetTrait: true, exceptTrait: 'ice' }, // after tunnel + ice runway -- also clears leftover heavy iron
+    ...traitCluster(elevatedY2, 6350, 'rubber', 'ice'), // decoy: rubber (height, not the speed needed to clear the pit) / correct: ice -- back to what it was first shown for, a real pit
+    // no platform from 6940 to 7340: a real pit, spikes at the bottom (see pits).
     // normal/other bounces fall short and drop in; only ice's speed clears it.
 
-    { xStart: 8550, xEnd: 9550, y: elevatedY2, goal: true }, // goal — wide, since ice's speed can carry the landing far past the pit
+    { xStart: 7340, xEnd: 8340, y: elevatedY2, goal: true }, // goal — wide, since ice's speed can carry the landing far past the pit
   ];
 
   ceilings = platforms
     .filter((p) => p.ceiling)
     .map((p) => ({ xStart: p.xStart, xEnd: p.xEnd, y: p.y - 100 }));
 
-  pits = [{ xStart: 8150, xEnd: 8550, y: elevatedY2 + 140 }];
+  pits = [{ xStart: 6940, xEnd: 7340, y: elevatedY2 + 140 }];
 
   // trait is shown before touching (color + label, see render()). it's granted only on an actual
   // landing on the platform (see update()), not by flying near it, so grabbing it always means a
@@ -286,7 +314,15 @@ function failRun(message) {
 function winRun() {
   runState.status = 'won';
   runState.timer = 2;
-  pushToast('목표 도달! 클리어');
+  // best record is the one thing that survives resetBall() -- it's compared and saved here, once,
+  // rather than continuously, so a run that never finishes can't affect it.
+  if (bestClearTime === null || runState.elapsed < bestClearTime) {
+    bestClearTime = runState.elapsed;
+    saveBest();
+    pushToast('목표 도달! 최고 기록 갱신');
+  } else {
+    pushToast('목표 도달! 클리어');
+  }
 }
 
 function update(dt) {
@@ -518,6 +554,7 @@ function render() {
     ctx.fillText(`발동 중: ${TRAIT_LABELS[ball.activeTrait]}`, 16, 48);
   }
   ctx.fillText(`시간: ${runState.elapsed.toFixed(1)}초`, 16, 68);
+  ctx.fillText(`최고 기록: ${bestClearTime === null ? '없음' : bestClearTime.toFixed(1) + '초'}`, 16, 88);
 
   // card 3: current difficulty rule + tuned value, always visible (not just in a debug panel)
   ctx.font = '13px sans-serif';
@@ -540,7 +577,7 @@ function render() {
   ctx.fillStyle = '#e8eaf2';
   toasts.forEach((toast, i) => {
     ctx.globalAlpha = Math.min(1, toast.life);
-    ctx.fillText(toast.text, 16, 96 + i * 20);
+    ctx.fillText(toast.text, 16, 116 + i * 20);
     ctx.globalAlpha = 1;
   });
 }
