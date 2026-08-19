@@ -187,7 +187,7 @@ function buildLevel() {
     // missing it just means falling through the gap ahead, same as any other missed hazard.
     { xStart: 4350, xEnd: 4430, y: elevatedY - 400, trait: 'cloud', used: false }, // sky island, 400px above the elevatedY carrier ground
 
-    { xStart: 4600, xEnd: 5950, y: elevatedY2, resetTrait: true, exceptTrait: 'iron' }, // landing after the sky-glide. pressing Space for cloud is time-sensitive by nature (it only bends the *current* arc if it's still ascending -- a real player's reaction time (measured against actual keypress-to-effect delay, not an idealized instant press) easily eats into that window enough to land 400-800px short of where an instant press would). rather than gate survival on reflexes, this starts right after the sky island: even a late press, or no press at all, still glides or falls onto solid ground here -- the real test stays reaching the sky island itself (steering into a fast-moving target mid-arc); skipping it outright still sends the unredirected boost arc sailing far past this ledge into open air.
+    { xStart: 4870, xEnd: 5950, y: elevatedY2, resetTrait: true, exceptTrait: 'iron' }, // landing after the sky-glide. picking up cloud but never pressing Space (or skipping it after landing) comes down at ~x=4801 -- short of here, so cloud genuinely has to be *used*, not just collected. but pressing it isn't a frame-perfect check either: measured against real keypress-to-effect delay (not an idealized instant press), anything within ~650ms of landing on the sky island still glides past this point comfortably, which covers ordinary human reaction time -- only a very slow or missed press (or skipping the sky island outright, which sends the unredirected boost arc sailing far past this ledge instead) falls short.
     ...traitCluster(elevatedY2, 5400, 'cloud', 'iron'), // decoy: cloud (already spent, and still too tall for the tunnel anyway) / correct: iron (low tunnel)
 
     { xStart: 5950, xEnd: 6290, y: elevatedY2, ceiling: true }, // low tunnel: only iron's tiny bounce fits
@@ -258,6 +258,22 @@ function dismissIntro() {
 
 let paused = false;
 
+// card 5: a felt event (screen shake on failure) plus a way to turn it down. reduceMotion only ever
+// gates whether the shake OFFSET gets applied in render() -- the timer itself still counts down and
+// failRun()/collision detection are completely untouched, so turning motion down never changes what
+// counts as a hit, only whether the camera visibly jolts about it.
+const SHAKE_DURATION = 0.35; // s
+const SHAKE_MAGNITUDE = 10; // px, at full strength (t=1), decaying to 0 by the end
+let shakeTimer = 0;
+let reduceMotion = false;
+
+const motionToggleBtn = document.getElementById('motion-toggle');
+motionToggleBtn.addEventListener('click', () => {
+  reduceMotion = !reduceMotion;
+  motionToggleBtn.textContent = `움직임 감소: ${reduceMotion ? '켬' : '끔'}`;
+  motionToggleBtn.setAttribute('aria-pressed', String(reduceMotion));
+});
+
 function togglePause() {
   paused = !paused;
   pushToast(paused ? '일시정지 — Esc로 재개' : '재개');
@@ -321,6 +337,7 @@ function failRun(message) {
   runState.status = 'lost';
   runState.timer = 1.4;
   pushToast(message);
+  shakeTimer = SHAKE_DURATION; // always set regardless of reduceMotion -- render() decides whether it's felt
 }
 
 function winRun() {
@@ -340,6 +357,8 @@ function winRun() {
 function update(dt) {
   if (showIntro) return; // nothing moves until the player dismisses the title screen
   if (paused) return; // fully frozen -- no physics, no toast countdown, no win/lose auto-restart timer
+
+  if (shakeTimer > 0) shakeTimer = Math.max(0, shakeTimer - dt);
 
   if (runState.status !== 'playing') {
     runState.timer -= dt;
@@ -490,7 +509,17 @@ function render() {
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.save();
-  ctx.translate(-cameraX, 0);
+  // shake only ever touches this offset -- HUD text and the 실패/클리어 overlay are drawn after
+  // ctx.restore() below, in screen space, so they (and the underlying fail/win logic) never jitter
+  // regardless of this setting; only the world itself visibly shakes.
+  let shakeX = 0;
+  let shakeY = 0;
+  if (shakeTimer > 0 && !reduceMotion) {
+    const t = shakeTimer / SHAKE_DURATION;
+    shakeX = (Math.random() * 2 - 1) * SHAKE_MAGNITUDE * t;
+    shakeY = (Math.random() * 2 - 1) * SHAKE_MAGNITUDE * t;
+  }
+  ctx.translate(-cameraX + shakeX, shakeY);
 
   for (const p of platforms) {
     ctx.fillStyle = p.goal ? '#4ade80' : p.ceiling ? '#a3a3a3' : '#3a4059';

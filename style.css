@@ -17,10 +17,35 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
 }
 
 #game-canvas {
   display: block;
   background: #232837;
   touch-action: none;
+}
+
+#motion-toggle {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: sans-serif;
+  color: #e8eaf2;
+  background: #2f3444;
+  border: 1px solid #454b60;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#motion-toggle:hover {
+  background: #3a4059;
+}
+
+#motion-toggle[aria-pressed="true"] {
+  background: #4ade80;
+  color: #14231a;
+  border-color: #4ade80;
 }
